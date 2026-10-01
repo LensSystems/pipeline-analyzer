@@ -1,0 +1,37 @@
+# Pruebas del analizador en Linux, Windows y macOS con varias versiones de Python.
+trigger:
+  branches:
+    include: [main, master]
+pr:
+  branches:
+    include: ['*']
+
+strategy:
+  matrix:
+    linux_py39:   { vmImage: ubuntu-latest,  python.version: '3.9' }
+    linux_py311:  { vmImage: ubuntu-latest,  python.version: '3.11' }
+    linux_py313:  { vmImage: ubuntu-latest,  python.version: '3.13' }
+    windows_py39: { vmImage: windows-latest, python.version: '3.9' }
+    windows_py312: { vmImage: windows-latest, python.version: '3.12' }
+    windows_py313: { vmImage: windows-latest, python.version: '3.13' }
+    macos_py311:  { vmImage: macOS-latest,   python.version: '3.11' }
+    macos_py313:  { vmImage: macOS-latest,   python.version: '3.13' }
+
+pool:
+  vmImage: $(vmImage)
+
+steps:
+  - checkout: self
+    persistCredentials: false
+    fetchDepth: 1
+
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: $(python.version)
+
+  - script: python -m pipeline_analyzer --doctor
+    displayName: Diagnóstico del entorno
+
+  - script: python -m unittest discover -s tests -v
+    displayName: Pruebas unitarias
+
