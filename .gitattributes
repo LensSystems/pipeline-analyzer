@@ -1,0 +1,7 @@
+# Normaliza los finales de línea; los lanzadores conservan el suyo para que funcionen en cada sistema
+* text=auto
+*.sh text eol=lf
+*.command text eol=lf
+*.bat text eol=crlf
+*.py text eol=lf
+*.md text eol=lf

@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+
+# Reportes generados (pueden contener información sensible del pipeline analizado)
+reporte_pipeline/
+
+# Notas internas de trabajo (contienen rutas y datos locales)
+HANDOFF.md
+
+# Sistema y editores
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

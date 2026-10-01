@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pipeline-analyzer"
+dynamic = ["version"]
+authors = [{ name = "LensSystems" }]
+maintainers = [{ name = "LensSystems" }]
+license = { text = "MIT" }
+keywords = ["ci", "cd", "pipeline", "devops", "azure-devops", "github-actions", "gitlab-ci", "jenkins", "log-analysis", "sonarqube", "security", "static-analysis"]
+description = "Analiza logs de pipelines CI/CD (Azure DevOps, GitHub Actions, GitLab CI, Jenkins), propone remediaciones y genera reportes comparativos."
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = []  # solo biblioteca estándar
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Build Tools",
+    "Natural Language :: Spanish",
+    "Programming Language :: Python :: 3",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Environment :: Console",
+    "Environment :: X11 Applications :: Tk",
+]
+
+[project.urls]
+Homepage = "https://github.com/LensSystems/pipeline-analyzer"
+Repository = "https://github.com/LensSystems/pipeline-analyzer"
+Issues = "https://github.com/LensSystems/pipeline-analyzer/issues"
+Changelog = "https://github.com/LensSystems/pipeline-analyzer/blob/main/CHANGELOG.md"
+
+[project.scripts]
+pipeline-analyzer = "pipeline_analyzer.cli:main"
+
+[project.gui-scripts]
+# En Windows genera un .exe sin ventana de consola que abre directamente las ventanas de selección.
+pipeline-analyzer-gui = "pipeline_analyzer.cli:gui_main"
+
+[tool.setuptools]
+packages = ["pipeline_analyzer"]
+
+[tool.setuptools.dynamic]
+version = { attr = "pipeline_analyzer.__version__" }
