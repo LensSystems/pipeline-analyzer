@@ -15,6 +15,12 @@
 
 ---
 
+<div align="center">
+
+<img src="docs/images/asistente-seleccion.png" alt="Asistente interactivo: paso 1 de 3, selección de la ejecución a analizar" width="560">
+
+</div>
+
 `pipeline-analyzer` lee los logs de tus ejecuciones de **Azure DevOps, GitHub Actions, GitLab CI, Jenkins** (o cualquier log de texto), detecta problemas de **build, calidad y seguridad**, los ordena en una **ruta para pasar el pipeline** con sus comandos de corrección y **compara ejecuciones** para mostrar qué mejoró, qué empeoró y qué sigue pendiente.
 
 Está escrito solo con la **biblioteca estándar de Python**: no hay nada que instalar y **tus logs nunca salen de tu equipo**.
@@ -168,6 +174,12 @@ logs_123456/
 
 </details>
 
+<div align="center">
+
+<img src="docs/images/asistente-resultado.png" alt="Asistente interactivo: análisis completado, con el veredicto, el conteo por severidad y los reportes generados" width="560">
+
+</div>
+
 ## Qué genera
 
 Cada ejecución crea una subcarpeta nueva dentro de la carpeta de salida, con número consecutivo y fecha (por ejemplo `reporte_pipeline/003_2026-09-30/`), de modo que **todos los análisis quedan disponibles**.
@@ -205,6 +217,12 @@ Cada ejecución crea una subcarpeta nueva dentro de la carpeta de salida, con n�
 | Dependencias | Inventario desde el log contra CVE críticos conocidos (Log4Shell, Spring4Shell, Text4Shell, ActiveMQ, SnakeYAML, H2, XStream…) |
 | Kubernetes / OpenShift | `securityContext`, privilegios, Jolokia/JDWP expuestos, imagen mutable, límites, probes, credenciales en ConfigMap, Actuator, logging DEBUG |
 | `pom.xml` | Repositorios `http://`, CVE conocidos, `testFailureIgnore`, plugins solo en perfiles, propiedades duplicadas, Jackson 2+3, `javax.*` con Boot 3+, overrides del BOM, dependencias desactualizadas… |
+
+<div align="center">
+
+<img src="docs/images/historial-reportes.png" alt="Historial de reportes: todos los análisis con fecha, veredicto, hallazgos y enlaces a cada archivo" width="860">
+
+</div>
 
 ## Privacidad y seguridad
 
