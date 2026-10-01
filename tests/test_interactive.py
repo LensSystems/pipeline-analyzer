@@ -2,6 +2,7 @@
 
 import io
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -38,6 +39,7 @@ class ConsolePromptsTest(unittest.TestCase):
         sel = gather_console(_answers(str(self.main), "", ""), io.StringIO())
         self.assertEqual((sel["logs"], sel["pom"]), ([str(self.main)], None))
 
+    @unittest.skipIf(sys.platform.startswith("win"), "en Windows la barra invertida es separador de ruta, no escape de espacios")
     def test_dragged_path_with_escaped_spaces(self):
         spaced = make_download(self.tmp / "con espacios", "300")
         sel = gather_console(_answers(str(spaced).replace(" ", "\\ "), "n", "n"), io.StringIO())
