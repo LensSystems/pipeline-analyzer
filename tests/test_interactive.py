@@ -1,6 +1,7 @@
 """Modo interactivo por consola y avance hacia la ventana gráfica (sin abrir ventanas)."""
 
 import io
+import os
 import json
 import sys
 import tempfile
@@ -41,9 +42,16 @@ class PlatformStyleTest(unittest.TestCase):
         self.assertEqual(self._style("linux")["theme"], "clam")
 
 
+def _real_windows_enabled() -> bool:
+    """Las pruebas de ventanas reales son opcionales: dependen de la pantalla, del foco y del escalado de cada sistema."""
+    return os.environ.get("PIPELINE_ANALYZER_GUI_TESTS") == "1"
+
+
 def _gui_or_skip(testcase):
-    """Ventana real de tkinter, solo si hay pantalla; las pruebas la cierran siempre."""
+    """Ventana real de tkinter, solo si se pide (PIPELINE_ANALYZER_GUI_TESTS=1) y hay pantalla; siempre se cierra."""
     from pipeline_analyzer.interactive import Gui, gui_available
+    if not _real_windows_enabled():
+        testcase.skipTest("ventanas reales desactivadas (PIPELINE_ANALYZER_GUI_TESTS=1 para activarlas)")
     if not gui_available():
         testcase.skipTest("sin entorno gráfico")
     try:
@@ -197,6 +205,8 @@ class SameScreenOnEverySystemTest(unittest.TestCase):
 
     def _gui(self, os_name, primary_right):
         from pipeline_analyzer.interactive import Gui, gui_available
+        if not _real_windows_enabled():
+            self.skipTest("ventanas reales desactivadas (PIPELINE_ANALYZER_GUI_TESTS=1 para activarlas)")
         if not gui_available():
             self.skipTest("sin entorno gráfico")
         style = {"os": os_name, "theme": "clam", "families": ("Segoe UI",), "pad": 22, "radius": 0, "primary_right": primary_right}
