@@ -25,7 +25,7 @@ CSS = """
 .cxbar{display:flex;height:10px;border-radius:99px;overflow:hidden;background:var(--code);margin:0 0 24px}.cxbar>span{display:block;min-width:3px}
 .s-CRITICAL{--c:var(--sevC)}.s-HIGH{--c:var(--sevH)}.s-MEDIUM{--c:var(--sevM)}.s-LOW{--c:var(--sevL)}.s-INFO{--c:var(--muted)}
 .kc i,.cxbar>span{background:var(--c)}
-.cxt{width:100%;border-collapse:separate;border-spacing:0;font-size:14px}.cxt th{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);font-weight:700;
+.cxt{width:100%;border-collapse:separate;border-spacing:0;font-size:14px}.cxt th{font-size:13px;color:var(--muted);font-weight:600;
 text-align:center;padding:8px 10px;border-bottom:2px solid var(--border)}.cxt th:first-child,.cxt td:first-child{text-align:left}
 .cxt td{padding:13px 12px;border-bottom:1px solid var(--border);text-align:center;vertical-align:middle}.cxt tr:last-child td{border-bottom:0}
 .cxt .eng b{display:block;font-size:14px}.cxt .eng small{color:var(--muted);font-size:12px}
@@ -39,7 +39,7 @@ text-align:center;padding:8px 10px;border-bottom:2px solid var(--border)}.cxt th
 .cxg .qn{font-weight:700}.cxg .cw{color:var(--muted);font-size:13px}.cxg .bd{padding:0 24px 24px}.cxg h4{margin:26px 0 10px;font-size:14px}.cxg p{margin:10px 0}.cxg li{margin:8px 0}
 .cxg .tag{font-size:11px;font-weight:700;border-radius:6px;padding:1px 7px}.tag.blk{background:var(--badbg);color:var(--bad)}.tag.ef{background:var(--infobg);color:var(--info)}
 .v-fp{background:var(--okbg);color:var(--ok)}.v-real{background:var(--badbg);color:var(--bad)}.v-rev{background:var(--warnbg);color:var(--warn)}
-.cxg ol{margin:8px 0;padding-left:22px}.cxg .loc{width:100%}.cxg .loc td{font-size:13px;vertical-align:top}.refs{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
+.cxg ol{margin:8px 0;padding-left:22px}.cxg .loc{width:100%}.cxg .loc td{font-size:13px;vertical-align:top}.cxg .loc td:nth-child(3),.cxg .loc td:nth-child(4){white-space:nowrap}.refs{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
 .refs span{background:var(--code);border-radius:6px;padding:1px 8px;font-size:12px}.cxg pre{margin:6px 0}
 @media(max-width:640px){.cxk .big{font-size:32px}.cxt{font-size:13px}.cxt td,.cxt th{padding:7px 6px}}
 """

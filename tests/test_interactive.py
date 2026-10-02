@@ -20,6 +20,254 @@ def _answers(*values):
     return lambda prompt="": next(it)
 
 
+class PlatformStyleTest(unittest.TestCase):
+    def _style(self, platform, build=None):
+        from pipeline_analyzer.interactive import platform_style
+        wv = mock.Mock(return_value=mock.Mock(build=build)) if build is not None else None
+        with mock.patch.object(sys, "platform", platform), mock.patch.object(sys, "getwindowsversion", wv, create=True):
+            return platform_style()
+
+    def test_macos_uses_aqua_and_primary_on_the_right(self):
+        st = self._style("darwin")
+        self.assertEqual((st["os"], st["theme"], st["primary_right"]), ("mac", "aqua", True))
+
+    def test_windows_11_and_10_are_told_apart_by_build(self):
+        w11, w10 = self._style("win32", 22631), self._style("win32", 19045)
+        self.assertEqual((w11["os"], w11["theme"], w11["primary_right"]), ("win11", "vista", False))
+        self.assertEqual(w11["families"][0], "Segoe UI Variable Text")
+        self.assertEqual((w10["os"], w10["families"]), ("win10", ("Segoe UI",)))
+
+    def test_linux_falls_back_to_clam(self):
+        self.assertEqual(self._style("linux")["theme"], "clam")
+
+
+def _gui_or_skip(testcase):
+    """Ventana real de tkinter, solo si hay pantalla; las pruebas la cierran siempre."""
+    from pipeline_analyzer.interactive import Gui, gui_available
+    if not gui_available():
+        testcase.skipTest("sin entorno gráfico")
+    try:
+        g = Gui()
+    except Exception as exc:
+        testcase.skipTest("no se pudo abrir la ventana: %s" % exc)
+    testcase.addCleanup(g.destroy)
+    return g
+
+
+class WindowTest(unittest.TestCase):
+    def setUp(self):
+        self.g = _gui_or_skip(self)
+
+    def test_state_colors_meet_contrast_on_both_appearances(self):
+        from pipeline_analyzer.interactive import MAC_DARK, MAC_LIGHT
+
+        def lum(h):
+            r, g, b = [int(h[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+            f = lambda c: c / 12.92 if c <= .03928 else ((c + .055) / 1.055) ** 2.4
+            return .2126 * f(r) + .7152 * f(g) + .0722 * f(b)
+
+        def ratio(a, b):
+            hi, lo = max(lum(a), lum(b)), min(lum(a), lum(b))
+            return (hi + .05) / (lo + .05)
+
+        for key in ("ok", "bad"):
+            self.assertGreaterEqual(ratio(MAC_LIGHT[key], "#ececec"), 4.5)
+            self.assertGreaterEqual(ratio(MAC_DARK[key], "#2b2b2b"), 4.5)
+
+    def test_text_rewraps_to_the_window_width(self):
+        g = self.g
+        g._clear("x")
+        g._text("Título", bold=True)
+        g._text("descripción larga " * 30, small=True)
+        g.root.geometry("980x520")
+        g.root.update()
+        g.root.update()
+        self.assertGreater(int(str(g._wrapped[0][0].cget("wraplength"))), 700)
+
+    def test_single_form_collects_everything_and_blocks_analyze_without_a_log(self):
+        g = self.g
+        actions = iter(["pom", "main:dir", "cmp:dir", "rep:files", "rm:rep:0", "go"])
+        disabled_seen = []
+        g._choice = lambda opts, cancel=None, disabled=(): disabled_seen.append(disabled) or next(actions)
+        g._open = lambda kind, title, ft=None: "/logs/actual" if "analizar" in title else "/logs/anterior"
+        g.ask_pom = lambda: "/p/pom.xml"
+        g._open_many = lambda title: ["/r/a.pdf", "/r/b.xml"]
+        sel = g.gather()
+        self.assertEqual(disabled_seen[0], ("go",))        # sin log principal no se puede analizar
+        self.assertEqual(disabled_seen[-1], ())
+        self.assertEqual(sel, {"logs": ["/logs/anterior", "/logs/actual"], "main": "/logs/actual", "pom": "/p/pom.xml",
+                               "reports": ["/r/b.xml"]})
+
+    def test_escape_does_not_close_or_cancel_anything(self):
+        g = self.g
+        g._clear("Nuevo análisis")
+        g.root.after(50, lambda: g.root.event_generate("<Escape>"))
+        g.root.after(150, lambda: g._var.set("go"))      # el usuario sigue en la pantalla hasta que elige algo
+        self.assertEqual(g._choice([("Analizar", "go"), ("Cancelar", "skip")]), "go")
+        self.assertFalse(g.closed)
+        self.assertEqual(g.root.bind("<Escape>"), "")    # ninguna pantalla enlaza Esc
+
+    def test_form_cancel_raises(self):
+        from pipeline_analyzer.interactive import Cancelled
+        self.g._choice = lambda opts, cancel=None, disabled=(): "skip"
+        with self.assertRaises(Cancelled):
+            self.g.gather()
+
+    def test_header_shows_the_screen_title_not_the_app_name_and_brand_only_in_result(self):
+        g = self.g
+        g._clear("Nuevo análisis")
+        self.assertEqual(g._step["text"], "Nuevo análisis")
+        self.assertEqual(len(g.footer.winfo_children()), 0)          # sin marca fuera del resultado
+        g._clear("Análisis completado")
+        self.assertEqual(len(g.footer.winfo_children()), 1)
+
+    def test_window_is_wider_and_grows_then_shrinks_with_the_content(self):
+        g = self.g
+        self.assertEqual((g.WIDTH, g.HEIGHT), (760, 500))
+        actions = iter(["main:dir", "cmp:dir", "cmp:file", "rep:files", "rm:cmp:0", "rm:cmp:0", "go"])
+        heights = []
+
+        def choice(opts, cancel=None, disabled=()):
+            g._fit()
+            g.root.update()
+            heights.append(g.root.winfo_height())
+            return next(actions)
+
+        g._choice = choice
+        paths = iter(["/l/actual", "/l/ant1", "/l/ant2"])
+        g._open = lambda kind, title, ft=None: next(paths)
+        g._open_many = lambda title: ["/r/a.pdf", "/r/b.xml", "/r/c.json"]
+        g.gather()
+        self.assertEqual(heights[0], 500)
+        self.assertGreater(max(heights), 500)        # se alarga al agregar archivos
+        self.assertEqual(heights[-1], 500)           # y vuelve a su alto base al quitarlos
+
+    def test_remove_button_is_orange_with_readable_text(self):
+        g = self.g
+        g._clear("Nuevo análisis")
+        clicked = []
+        b = g._remove_button(g._card(), lambda: clicked.append(1))
+        fills = {b.itemcget(i, "fill") for i in b.find_all()}
+        self.assertIn("#c2410c", fills)          # fondo naranja
+        self.assertIn("#ffffff", fills)          # texto blanco
+        self.assertGreaterEqual(int(b.cget("height")), 24)
+        b.pack()
+        g.root.update()
+        b.event_generate("<Button-1>", x=3, y=3)
+        g.root.update()
+        self.assertEqual(len(clicked), 1)
+        b.focus_force()
+        g.root.update()
+        b.event_generate("<space>")
+        g.root.update()
+        self.assertEqual(len(clicked), 2)
+
+    def test_open_report_keeps_the_window_and_new_analysis_is_offered(self):
+        g = self.g
+        opened, shown = [], []
+        g._open_local = lambda p: opened.append(p)
+        answers = iter(["open", "open", "new"])
+        g._choice = lambda opts, cancel=None, disabled=(): shown.append([o[0] for o in opts]) or next(answers)
+        g.show_result("Bloqueado por: PMD", {"HIGH": 1}, ["/r/reporte_completo.html", "/r/reporte.pdf"])
+        self.assertEqual(shown[0], ["Abrir reporte", "Nuevo análisis", "Cerrar"])
+        self.assertEqual(len(opened), 2)                 # abrir dos veces: la ventana sigue ahí
+        self.assertTrue(g.new_requested)
+        g._choice = lambda opts, cancel=None, disabled=(): "close"
+        g.show_result("Todos los breakers pasaron", {}, ["/r/reporte_completo.html"])
+        self.assertFalse(g.new_requested)
+
+    def test_cancel_during_analysis_asks_first_and_stops(self):
+        from pipeline_analyzer.interactive import Cancelled
+        g = self.g
+        answers = iter(["no", "yes"])
+        g.root.tk.eval("rename tk_messageBox _orig_mb")
+        g.root.tk.createcommand("tk_messageBox", lambda *a: next(answers))
+        listener = g.open_progress()
+        self.assertIn("Cancelar", g.buttons)
+        g._on_close()                       # primera respuesta: «no» → sigue
+        listener(0.1, "Leyendo", "", None)
+        g._on_close()                       # segunda: «yes» → cancela
+        with self.assertRaises(Cancelled):
+            listener(0.2, "Leyendo", "", None)
+        g.close_progress()
+
+
+class SameScreenOnEverySystemTest(unittest.TestCase):
+    """Windows y Linux usan la misma pantalla única que macOS, con el orden de botones propio de cada sistema."""
+
+    def _gui(self, os_name, primary_right):
+        from pipeline_analyzer.interactive import Gui, gui_available
+        if not gui_available():
+            self.skipTest("sin entorno gráfico")
+        style = {"os": os_name, "theme": "clam", "families": ("Segoe UI",), "pad": 22, "radius": 0, "primary_right": primary_right}
+        with mock.patch("pipeline_analyzer.interactive.platform_style", return_value=style):
+            try:
+                g = Gui()
+            except Exception as exc:
+                self.skipTest("no se pudo abrir la ventana: %s" % exc)
+        self.addCleanup(g.destroy)
+        return g
+
+    def test_windows_gets_the_single_form_with_the_same_size_and_cancel_button(self):
+        for os_name in ("win10", "win11", "linux"):
+            g = self._gui(os_name, os_name == "linux")
+            self.assertEqual((g.WIDTH, g.HEIGHT), (760, 500))
+            self.assertFalse(g.mac)
+            shown = []
+            g._choice = lambda opts, cancel=None, disabled=(): shown.append([o[0] for o in opts]) or "skip"
+            from pipeline_analyzer.interactive import Cancelled
+            with self.assertRaises(Cancelled):
+                g.gather()                                    # mismo formulario que en macOS
+            self.assertEqual(shown, [["Analizar", "Cancelar"]])
+            g.open_progress()
+            self.assertIn("Cancelar", g.buttons)              # y la misma cancelación durante el análisis
+            g.close_progress()
+
+    def test_windows_primary_button_is_first_and_macos_style_is_last(self):
+        win, lin = self._gui("win11", False), self._gui("linux", True)
+        for g in (win, lin):
+            g.root.update()
+            g.root.after(30, lambda g=g: g._var.set("go"))
+            g._choice([("Analizar", "go"), ("Cancelar", "skip")])
+        # En Windows el principal queda a la izquierda del grupo; en Linux/macOS, a la derecha
+        self.assertLess(win.buttons["Analizar"].grid_info()["column"], win.buttons["Cancelar"].grid_info()["column"])
+        self.assertGreater(lin.buttons["Analizar"].grid_info()["column"], lin.buttons["Cancelar"].grid_info()["column"])
+
+
+class NewAnalysisFlowTest(unittest.TestCase):
+    def test_new_analysis_returns_to_the_start_and_runs_again(self):
+        from pipeline_analyzer import cli as cli_mod
+        from test_analyzer import failing_log
+
+        class FakeGui:
+            def __init__(self):
+                self.gathers, self.runs, self.new_requested, self.destroyed = 0, 0, False, False
+
+            def gather(self):
+                self.gathers += 1
+                log = str(failing_log())
+                return {"logs": [log], "pom": None, "main": log, "reports": []}
+
+            def open_progress(self):
+                return lambda *a, **k: None
+
+            def close_progress(self):
+                pass
+
+            def show_result(self, *a):
+                self.runs += 1
+                self.new_requested = self.runs == 1       # la primera vez pide «Nuevo análisis»
+
+            def destroy(self):
+                self.destroyed = True
+
+        fake = FakeGui()
+        with mock.patch.object(cli_mod, "Gui", return_value=fake), mock.patch.object(cli_mod, "gui_status", return_value=(True, "", "")):
+            rc = cli_mod.main(["--gui", "--no-console", "--out-dir", tempfile.mkdtemp()])
+        self.assertEqual(rc, 0)
+        self.assertEqual((fake.gathers, fake.runs, fake.destroyed), (2, 2, True))
+
+
 class ConsolePromptsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())

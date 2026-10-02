@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from . import BRAND, __version__
+from . import theme as TH
 
 HISTORY_NAME = "historial-reportes.html"
 FILE_LABELS = [("reporte.html", "HTML", False), ("reporte.pdf", "PDF", False), ("reporte.md", "Markdown", False),
@@ -93,16 +94,12 @@ def write_index(base: Path) -> Path:
 _JS = ("var q=document.getElementById('q');if(q){q.addEventListener('input',function(){var v=q.value.toLowerCase();"
        "document.querySelectorAll('#t tr[data-q]').forEach(function(r){r.style.display=r.dataset.q.indexOf(v)<0?'none':''})})}")
 
-_CSS = """
-:root{--bg:#f7f7f5;--card:#fff;--fg:#1d1d1b;--muted:#6b6b66;--border:#e3e2dc;--ok:#1f7a4d;--okbg:#e3f3ea;--bad:#b42318;--badbg:#fde8e6;
---warn:#9a6700;--warnbg:#fff4d6;--info:#2f5fa7;--infobg:#e6eefb}
-@media (prefers-color-scheme:dark){:root{--bg:#161615;--card:#1f1f1d;--fg:#ecebe6;--muted:#a3a29b;--border:#34332f;--ok:#5cc58f;--okbg:#17301f;
---bad:#ff8a7a;--badbg:#3a1c18;--warn:#f2c14e;--warnbg:#342a10;--info:#8fb4f5;--infobg:#18243a}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;overflow-wrap:anywhere}
+_CSS = TH.TOKENS + """
+
 main{width:100%;padding:clamp(12px,2.5vw,40px) clamp(12px,3vw,48px) 60px}h1{font-size:26px;margin:0 0 4px}.sub{color:var(--muted);font-size:13px;margin:0 0 14px}
 #q{width:100%;max-width:520px;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--fg);font:inherit;margin:0 0 14px}
 .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:8px 12px}.tbl{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:14px}
-th,td{padding:8px 10px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}th{font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--muted)}
+th,td{padding:8px 10px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}th{font-size:13px;color:var(--muted);font-weight:600}
 th{overflow-wrap:normal;word-break:normal}td.num,td.date{white-space:nowrap}td.files{min-width:260px}.pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;font-weight:600;margin:1px 2px 1px 0}
 .p-ok{background:var(--okbg);color:var(--ok)}.p-bad{background:var(--badbg);color:var(--bad)}.p-info{background:var(--infobg);color:var(--info)}.p-na{color:var(--muted)}
 .sev-CRITICAL,.sev-HIGH{background:var(--badbg);color:var(--bad)}.sev-MEDIUM{background:var(--warnbg);color:var(--warn)}.sev-LOW{background:var(--infobg);color:var(--info)}
