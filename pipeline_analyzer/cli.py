@@ -25,6 +25,7 @@ from .extractors import extract
 from .logparser import STEP_FILE_RE, build_id_from_path, discover, is_multi_file, parse_attempts
 from .index_page import write_index, write_summary
 from .pom_checks import check_pom
+from . import inventory
 from .tool_reports import discover_reports
 from . import compat
 from .interactive import Cancelled, Gui, gather_console, gui_status
@@ -91,8 +92,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "Si no se indica ninguna, el programa las pide (ventanas o consola).")
     ap.add_argument("--pom", help="pom.xml a revisar (opcional)")
     ap.add_argument("--reports", action="append", metavar="RUTA",
-                    help="Carpeta o archivo con los reportes de las herramientas (PMD/Checkstyle/SpotBugs XML, JSON de CxOne) para mostrar "
+                    help="Carpeta o archivo con los reportes de las herramientas (PMD/Checkstyle/SpotBugs XML, JSON o PDF de Checkmarx/CxOne) para mostrar "
                          "reglas, archivos y líneas en el HTML. Se puede repetir. También se busca en la carpeta de logs y en el target/ del pom")
+    ap.add_argument("--dump-pdf", metavar="PDF", help="Muestra el texto que se lee de un PDF de Checkmarx y los hallazgos que se interpretan "
+                    "(para diagnosticar un PDF que no se reconoce) y termina")
     ap.add_argument("--labels", help="Etiquetas separadas por coma, una por ejecución y en el mismo orden")
     ap.add_argument("--keep-order", action="store_true", help="No reordenar las ejecuciones por fecha de inicio")
     ap.add_argument("--out-dir", help="Carpeta base de los reportes (default: reporte_pipeline; en modo interactivo, junto al log principal). "
@@ -118,6 +121,27 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def _dump_pdf(path: str) -> int:
+    from .cxone_pdf import dump_text, parse_text
+    from .pdf_reader import PdfError, extract_text
+    try:
+        if path.lower().endswith((".md", ".txt")):
+            pages = [Path(path).read_text(encoding="utf-8", errors="replace")]
+            print(pages[0])
+        else:
+            print(dump_text(path))
+            pages = extract_text(path)
+        rep = parse_text(pages)
+    except PdfError as exc:
+        print("No se pudo leer %s: %s" % (path, exc), file=sys.stderr)
+        return 2
+    print("\n===== hallazgos interpretados: %d =====" % len(rep["items"]))
+    for it in rep["items"]:
+        print("%-9s %-5s %-34s %s%s %s" % (it["severity"], it["category"], it["rule"][:34], it["file"], ":%d" % it["line"] if it["line"] else "",
+                                          it["state"]))
+    return 0
+
+
 def main(argv=None) -> int:
     if not compat.python_ok():
         print(compat.python_error(), file=sys.stderr)
@@ -127,6 +151,8 @@ def main(argv=None) -> int:
     if args.doctor:
         print(compat.doctor())
         return 0
+    if args.dump_pdf:
+        return _dump_pdf(args.dump_pdf)
     gui = None
     use_gui = False
     interactive_tty = sys.stdin is not None and sys.stdin.isatty()
@@ -155,6 +181,7 @@ def main(argv=None) -> int:
             return 130
         args.logs = sel["logs"]
         args.pom = args.pom or sel["pom"]
+        args.reports = list(args.reports or []) + list(sel.get("reports") or [])
         if args.out_dir is None:
             args.out_dir = str(Path(sel["main"]).resolve().parent / "reporte_pipeline")
     if args.out_dir is None:
@@ -269,10 +296,15 @@ def _run(args, gui) -> int:
             prog.advance()
 
         report_dirs = [Path(r) for r in (args.reports or [])]
-        report_dirs += [p for p in paths if p.is_dir()]
+        report_dirs += [p for p in paths if p.is_dir() or p.suffix.lower() == ".zip"]
         if args.pom and (Path(args.pom).parent / "target").is_dir():
             report_dirs.append(Path(args.pom).parent / "target")
-        analysis.tool_reports = discover_reports([d for d in report_dirs if d.exists()])
+        audit: List[dict] = []
+        analysis.tool_reports = discover_reports([d for d in report_dirs if d.exists()], audit)
+        analysis.review = inventory.build(list(paths) + [d for d in report_dirs if d not in paths and d.exists()], audit)
+        c = analysis.review["counts"]
+        prog.log("Archivos revisados: %d (%d logs, %d definiciones, %d reportes de herramientas, %d ignorados)"
+                 % (c["total"], c["logs"], c["definiciones"], c["reportes"], c["ignorados"]))
         if analysis.tool_reports:
             prog.log("Reportes de herramientas: " + ", ".join("%s (%d)" % (t, r["total"]) for t, r in analysis.tool_reports.items()))
 

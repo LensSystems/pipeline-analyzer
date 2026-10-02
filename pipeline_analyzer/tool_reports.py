@@ -7,16 +7,22 @@ solo biblioteca estándar. Tolera formatos parciales: lo que no entiende lo igno
 
 import json
 import os
+import tempfile
+import zipfile
 import xml.etree.ElementTree as ET
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from .cxone_pdf import parse_cxone_pdf
+
 MAX_FILES = 4000          # archivos revisados como máximo al recorrer carpetas
 MAX_BYTES = 80 * 1024 * 1024
 SKIP_DIRS = {".git", "node_modules", ".idea", "__pycache__"}
-TOOL_LABEL = {"pmd": "PMD", "checkstyle": "Checkstyle", "spotbugs": "SpotBugs", "cxone": "CxOne"}
-ORDER = ("pmd", "checkstyle", "spotbugs", "cxone")
+TOOL_LABEL = {"pmd": "PMD", "checkstyle": "Checkstyle", "spotbugs": "SpotBugs", "cxone": "CxOne", "cxone_pdf": "CxOne (PDF)"}
+ORDER = ("pmd", "checkstyle", "spotbugs", "cxone", "cxone_pdf")
+MAX_PDFS = 20             # PDF revisados como máximo por ejecución (los de carpetas de logs suelen ser ajenos)
+MAX_PDF_BYTES = 40 * 1024 * 1024
 _SNIFF = {b"<pmd": "pmd", b"<checkstyle": "checkstyle", b"<BugCollection": "spotbugs"}
 _SEV_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
 
@@ -158,6 +164,10 @@ def _sniff(path: Path) -> Optional[str]:
         return None
     if path.suffix.lower() == ".xml":
         return next((t for k, t in _SNIFF.items() if k in head), None)
+    if path.suffix.lower() == ".md":  # reporte de Checkmarx convertido a Markdown
+        return "cxone_pdf"
+    if path.suffix.lower() == ".pdf":
+        return "cxone_pdf" if head.startswith(b"%PDF-") else None
     if path.suffix.lower() == ".json" and (b'"results"' in head or head.lstrip()[:1] == b"["):
         return "cxone"
     return None
@@ -176,36 +186,100 @@ def _candidates(paths: Iterable[Path]) -> Iterable[Path]:
                 seen += 1
                 if seen > MAX_FILES:
                     return
-                if name.lower().endswith((".xml", ".json")):
+                if name.lower().endswith((".xml", ".json", ".pdf", ".md")):
                     yield Path(root, name)
 
 
-def discover_reports(paths: Iterable[Path]) -> Dict[str, Dict[str, Any]]:
+def _unzip_reports(zpath: Path, dest: str, audit: Optional[List[Dict[str, str]]]) -> List[Path]:
+    """Extrae del .zip solo los archivos que pueden ser reportes (xml/json/pdf), con nombres seguros y tamaño acotado."""
+    out: List[Path] = []
+    try:
+        zf = zipfile.ZipFile(str(zpath))
+    except (zipfile.BadZipFile, OSError):
+        return out
+    with zf:
+        for i, info in enumerate(zf.infolist()):
+            name = info.filename
+            if info.is_dir() or not name.lower().endswith((".xml", ".json", ".pdf", ".md")):
+                continue
+            if info.file_size > (MAX_PDF_BYTES if name.lower().endswith((".pdf", ".md")) else MAX_BYTES):
+                if audit is not None:
+                    audit.append({"file": "%s!%s" % (zpath.name, name), "status": "omitido: archivo muy grande"})
+                continue
+            target = Path(dest, "%d_%s" % (i, Path(name).name))  # nunca se usa la ruta del zip: evita escribir fuera de dest
+            target.write_bytes(zf.read(info))
+            out.append(target)
+            _ZIP_ORIGIN[str(target)] = "%s!%s" % (zpath.name, name)
+    return out
+
+
+_ZIP_ORIGIN: Dict[str, str] = {}
+
+
+def discover_reports(paths: Iterable[Path], audit: Optional[List[Dict[str, str]]] = None) -> Dict[str, Dict[str, Any]]:
     """Busca reportes de PMD, Checkstyle, SpotBugs y CxOne en archivos o carpetas.
 
     Devuelve ``{herramienta: {"items": [...], "sources": [nombres], "total": n}}``; varios módulos se combinan.
     """
+    with tempfile.TemporaryDirectory() as tmp:
+        expanded: List[Path] = []
+        for p in paths:
+            p = Path(p)
+            if p.is_file() and p.suffix.lower() == ".zip":
+                expanded += _unzip_reports(p, tmp, audit)
+            else:
+                expanded.append(p)
+                if p.is_dir():  # .zip dentro de la carpeta compartida
+                    for zf in p.rglob("*.zip"):
+                        expanded += _unzip_reports(zf, tmp, audit)
+        return _discover(expanded, audit)
+
+
+def _discover(paths: List[Path], audit: Optional[List[Dict[str, str]]]) -> Dict[str, Dict[str, Any]]:
     found: Dict[str, Dict[str, Any]] = {}
+    pdfs = 0
+
+    def note(f: Path, status: str) -> None:
+        if audit is not None:
+            audit.append({"file": _ZIP_ORIGIN.get(str(f), str(f)), "status": status})
+
     for f in _candidates(paths):
         try:
-            if f.stat().st_size > MAX_BYTES:
+            if f.stat().st_size > (MAX_PDF_BYTES if f.suffix.lower() in (".pdf", ".md") else MAX_BYTES):
                 continue
         except OSError:
             continue
         kind = _sniff(f)
         if not kind:
+            if f.suffix.lower() in (".xml", ".json", ".pdf", ".md"):
+                note(f, "sin formato de herramienta conocido")
             continue
-        rep = parse_cxone_json(f) if kind == "cxone" else parse_xml_report(f)
+        if kind == "cxone_pdf":
+            pdfs += 1
+            if pdfs > MAX_PDFS:
+                note(f, "omitido: más de %d PDF" % MAX_PDFS)
+                continue
+            rep = parse_cxone_pdf(f)
+        else:
+            rep = parse_cxone_json(f) if kind == "cxone" else parse_xml_report(f)
         if not rep:
+            note(f, "no es un reporte reconocido" if kind != "cxone_pdf" else "PDF que no es de Checkmarx (o sin hallazgos legibles)")
             continue
+        note(f, "leído: %s (%d hallazgos)" % (TOOL_LABEL.get(rep["tool"], rep["tool"]), len(rep["items"])))
         slot = found.setdefault(rep["tool"], {"items": [], "sources": []})
         slot["items"] += rep["items"]
-        slot["sources"].append(f.name)
+        slot["sources"].append(_ZIP_ORIGIN.get(str(f), f.name).rsplit("!", 1)[-1].rsplit("/", 1)[-1])
+        if rep["tool"] == "cxone_pdf":
+            slot.setdefault("summary", {}).update(rep.get("summary") or {})
+            slot.setdefault("meta", {}).update(rep.get("meta") or {})
+            for k in ("format", "info", "filters", "queries", "totals", "notes"):
+                if k in rep:
+                    slot[k] = rep[k]
     for slot in found.values():
         seen = set()
         uniq = []
         for it in slot["items"]:  # módulos que repiten el mismo reporte
-            k = (it["file"], it["line"], it["rule"], it["message"])
+            k = (it["file"], it["line"], it["rule"], it["message"], it.get("index"))
             if k not in seen:
                 seen.add(k)
                 uniq.append(it)

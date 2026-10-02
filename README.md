@@ -56,7 +56,10 @@ Cuando un pipeline falla, el log tiene miles de líneas, varias herramientas (te
 - **Ruta para pasar el pipeline:** pasos ordenados (desbloquear el pipeline, tests, análisis estático, Sonar, seguridad), cada uno con su criterio de «listo cuando» y los comandos para validar en local.
 - **Comparativa entre ejecuciones:** tendencia por métrica y hallazgos *resueltos, nuevos, persistentes* o *no verificables*.
 - **Seguridad:** secretos en claro, TLS deshabilitado, `curl | bash`, imágenes `:latest`, ramas mutables, CVE conocidos, manifiestos de Kubernetes, definición del pipeline y `pom.xml`.
-- **Detalle exacto por herramienta:** con los reportes XML/JSON de PMD, Checkstyle, SpotBugs y CxOne muestra regla, archivo y línea.
+- **Detalle exacto por herramienta:** con los reportes XML/JSON de PMD, Checkstyle, SpotBugs y CxOne (JSON o el **PDF/Scan Report descargado de Checkmarx**, que se cruza con el log y propone la solución de cada hallazgo) muestra regla, archivo y línea.
+- **Resultados de CxOne completos:** tabla del *Scan Summary* del log con todos los motores (SAST, SCA, SCS, IaC, APIs, Containers), total, Secret Detection y Scorecard; los motores que no corrieron se muestran como «no ejecutado».
+- **Reporte de Checkmarx (PDF o Markdown):** lee cada resultado SAST y SCA, propone la solución (con ejemplo para Java/Spring/Maven), indica si parece falso positivo o problema real y comprueba que sea **el mismo escaneo** que el log (ID, rama, hora y estado de cada motor).
+- **Revisión completa de lo compartido:** al pasar una carpeta o un `.zip` se buscan reportes en todos sus archivos y el reporte lista qué se leyó y qué se ignoró.
 - **Reportes:** consola, HTML, PDF, Markdown y JSON, cada uno en versión para compartir (secretos enmascarados) y versión completa de uso local.
 - **Historial:** cada análisis se guarda en su propia carpeta numerada y se genera un `historial-reportes.html`.
 - **Interfaz:** línea de comandos, asistente con ventanas nativas (tkinter) o preguntas en consola.
@@ -96,7 +99,8 @@ También puedes hacer doble clic en `analizar_pipeline.command` (macOS) o `anali
 1. **Log principal:** eliges una carpeta de descarga (p. ej. `logs_123456`), un `.zip` o un archivo `.txt`/`.log`.
 2. **¿Agregar log de comparación?** Eliges la ejecución anterior de la misma forma. Puedes agregar varias.
 3. **¿Agregar `pom.xml`?** Opcional.
-4. Una ventana muestra el avance y, al terminar, el veredicto, los hallazgos por severidad y los archivos generados, con la opción de abrir el reporte.
+4. **¿Agregar reportes de las herramientas?** Opcional, por si el PDF de Checkmarx o los XML/JSON de PMD, Checkstyle y SpotBugs no venían en la carpeta o el `.zip`. Puedes elegir varios archivos (PDF, JSON, XML, Markdown) o una carpeta completa, y agregar más hasta pulsar **Continuar**.
+5. Una ventana muestra el avance y, al terminar, el veredicto, los hallazgos por severidad y los archivos generados, con la opción de abrir el reporte.
 
 Las ventanas usan los controles nativos del sistema (en macOS: botón principal azul, indicador de pasos y modo claro/oscuro). Sin entorno gráfico (servidor, SSH, Python sin tkinter) las mismas preguntas se hacen en la consola. `--no-gui` fuerza este modo y `--gui` abre las ventanas aunque pases rutas.
 
@@ -128,7 +132,8 @@ python3 -m pipeline_analyzer logs_123456 --fail-on HIGH --formats none
 |---|---|
 | `logs` | Carpetas `logs_<id>`, `.zip`, logs `.txt`/`.log`, carpetas que los agrupen o globs. **Si se omite, el programa las pide** |
 | `--pom` | `pom.xml` a revisar |
-| `--reports` | Carpeta o archivo con reportes de herramientas (PMD, Checkstyle y SpotBugs en XML; JSON de resultados de CxOne). Se puede repetir. También se buscan solos en la carpeta de logs y en el `target/` junto al `pom.xml` |
+| `--dump-pdf PDF` | Muestra el texto que se lee de un PDF de Checkmarx y los hallazgos que se interpretan; sirve para diagnosticar un PDF que no se reconoce |
+| `--reports` | Carpeta o archivo con reportes de herramientas (PMD, Checkstyle y SpotBugs en XML; JSON de resultados o PDF descargado de Checkmarx/CxOne). Se puede repetir. También se buscan solos en la carpeta de logs y en el `target/` junto al `pom.xml` |
 | `--labels` | Etiquetas por ejecución, en el mismo orden |
 | `--keep-order` | No reordenar las ejecuciones por fecha |
 | `--out-dir` | Carpeta base de los reportes (por defecto `reporte_pipeline/`). Cada análisis crea una subcarpeta nueva y **nunca sobrescribe** las anteriores |
@@ -149,6 +154,7 @@ python3 -m pipeline_analyzer logs_123456 --fail-on HIGH --formats none
 | `.zip` de la descarga | Igual que la carpeta, sin descomprimir |
 | Carpeta con varias `logs_*` o `.zip` | Una ejecución por cada una, comparadas por fecha |
 | Log único (`.txt`, `.log`, `consoleText`, job log de GitLab…) | Una ejecución |
+| Reportes de herramientas (`.pdf`, `.json`, `.xml`, `.md`) dentro de la carpeta o el `.zip`, o con `--reports` / el paso 4 del asistente | Detalle por regla, archivo y línea; el PDF o `.md` de Checkmarx se cruza además con el log |
 
 <details>
 <summary>Estructura típica de una descarga de Azure DevOps y cómo se usa cada parte</summary>
@@ -194,7 +200,11 @@ Cada ejecución crea una subcarpeta nueva dentro de la carpeta de salida, con n�
 | `resumen.json` | Resumen mínimo del análisis (sin rutas ni secretos), usado por el historial |
 | `reporte_pipeline/historial-reportes.html` | Historial de todos los análisis, del más nuevo al más viejo, con filtro y enlaces a cada archivo |
 
-**Orden de los reportes.** Primero lo que tú puedes corregir (plan de acción y hallazgos del proyecto y del `pom.xml`); al final, *Recomendaciones para quien administra el pipeline* y las validaciones de seguridad de referencia. Si algo del pipeline afecta a que tu proyecto pase, se etiqueta con `⚙ pipeline:` y, en HTML y PDF, un clic lleva a la causa.
+**Orden de los reportes.** Primero lo que bloquea el pipeline y lo que tú puedes corregir; al final, *Recomendaciones para quien administra el pipeline* (configuración del SCM, que normalmente no está al alcance del equipo de desarrollo) y las validaciones de seguridad de referencia. Si algo del pipeline afecta a que tu proyecto pase, se etiqueta con `⚙ pipeline:` y, en HTML y PDF, un clic lleva a la causa.
+
+**HTML con secciones plegables.** Siempre visibles: el resumen, la *ruta para pasar el pipeline* y los *resultados de CxOne* con sus hallazgos y soluciones. Plegadas (solo título y un dato breve, se expanden con un clic, desde el menú o desde un enlace interno): plan de acción, hallazgos del proyecto, comparativa, ejecuciones, archivos revisados, recomendaciones del pipeline y validaciones. Al imprimir se abren todas.
+
+**Resultados de CxOne.** Total de resultados, chips por severidad, barra proporcional y tabla por motor con su estado. Con el reporte de Checkmarx agrega, por consulta o CVE, qué significa, la **solución propuesta**, las ubicaciones con su veredicto (*probable falso positivo*, *problema real* o *revisar*) y el cruce con el log.
 
 **Ruta para pasar el pipeline (HTML).** Los hallazgos que bloquean, en pasos ordenados, con su criterio de «listo cuando», comandos de validación local y, si pasas `--reports`, la regla, el archivo y la línea de cada violación.
 
@@ -206,7 +216,7 @@ Cada ejecución crea una subcarpeta nueva dentro de la carpeta de salida, con n�
 |---|---|
 | Tests | **Maven Surefire, Gradle, Jest/Vitest, pytest, .NET y Go**: fallos con clase, método y línea; build SUCCESS con tests fallidos; tests ejecutados dos veces; salida ruidosa |
 | SonarQube | Cada condición del quality gate en ERROR con guía específica; **gate desfasado** (compara los tests reales con `test_success_density`); lectura prematura sin `qualitygate.wait`; cobertura al borde del umbral; clone superficial; JDK del scanner |
-| CxOne | SAST/SCA Critical y High, hallazgos `TO_VERIFY`, falta de línea base, SCS parcial |
+| CxOne | SAST/SCA Critical y High, hallazgos `TO_VERIFY`, falta de línea base, SCS parcial; tabla completa por motor (con Medium/Low) y, con el reporte de Checkmarx, cada resultado con su solución |
 | TMAS | Vulnerabilidades del artefacto |
 | Checkstyle / PMD / SpotBugs | Violaciones, versión del plugin, **SpotBugs sin soporte para la versión de Java**, herramientas no ejecutadas |
 | Infraestructura | Contenedor Docker huérfano, errores OCI, SMTP `EAUTH` |
@@ -268,6 +278,12 @@ pipeline_analyzer/
 ├── security.py       Secretos, supply chain, CVE conocidos, manifiestos K8s, checklist
 ├── pipeline_def.py   Revisión de la definición del pipeline (YAML / Jenkinsfile)
 ├── pom_checks.py     Revisión del pom.xml
+├── pdf_reader.py     Extracción de texto de PDF (solo biblioteca estándar)
+├── cxone_pdf.py      PDF de Checkmarx: hallazgos SAST/SCA/SCS y cruce con el log y el JSON
+├── cxone_scanreport.py  Parser del «Scan Report» de Checkmarx One
+├── cxone_fixes.py    Soluciones propuestas y veredicto por hallazgo
+├── cxone_view.py     Tabla de resultados y detalle de hallazgos (HTML)
+├── inventory.py      Inventario de archivos revisados en carpetas y .zip
 ├── tool_reports.py   Lectura de reportes XML/JSON de PMD, Checkstyle, SpotBugs y CxOne
 ├── plan.py           Ruta para pasar el pipeline
 ├── compare.py        Comparativa con tendencia y diff de hallazgos
@@ -298,6 +314,8 @@ Reglas del proyecto: **solo biblioteca estándar**, sintaxis compatible con Pyth
 
 - Las causas probables (p. ej. «S2095 en código de PDF/ZIP») son heurísticas: confírmalas en SonarQube o CxOne.
 - El log no incluye el detalle de las violaciones de PMD, del hallazgo SAST ni de los CVE de SCA. Con `--reports` y los reportes de las herramientas se obtiene regla, archivo y línea. El lector de CxOne está basado en el formato de su API y puede requerir ajustes con otras variantes.
+- El lector del PDF de Checkmarx usa patrones y se probó con el «Scan Report» de CxOne convertido a Markdown: si otra plantilla no se reconoce, `python3 -m pipeline_analyzer --dump-pdf reporte.pdf` muestra qué texto se lee. No admite PDF cifrados ni escaneados.
+- Las soluciones propuestas son una guía (con ejemplos para Java/Spring/Maven); confirma cada hallazgo en CxOne antes de marcarlo como *Not Exploitable*.
 - Los marcadores de sanitización (`<IP_3>`, `<HOST_1>`…) se muestran tal cual.
 - `KNOWN_VULNERABLE` es una lista corta de CVE críticos conocidos y no reemplaza a un análisis de composición de software (SCA).
 

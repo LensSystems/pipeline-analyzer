@@ -8,6 +8,8 @@ Orden de las preguntas:
   1. Log principal (ejecución a analizar): carpeta de descarga, .zip o archivo de log.
   2. ¿Agregar log(s) de comparación? (ejecuciones anteriores; se pueden agregar varios).
   3. ¿Agregar pom.xml?
+  4. ¿Agregar reportes de las herramientas? (PDF/JSON/XML de Checkmarx, PMD, Checkstyle, SpotBugs…), por si no venían
+     incluidos en la carpeta o el .zip de logs. Se pueden agregar varios, en archivos o carpetas.
 """
 
 import os
@@ -18,6 +20,7 @@ from typing import Callable, Dict, List, Optional
 
 LOG_TYPES = [("Logs de pipeline", "*.txt *.log *.zip *.out"), ("Todos los archivos", "*.*")]
 POM_TYPES = [("pom.xml", "*.xml"), ("Todos los archivos", "*.*")]
+REPORT_TYPES = [("Reportes de herramientas", "*.pdf *.json *.xml *.md"), ("Todos los archivos", "*.*")]
 
 
 class Cancelled(Exception):
@@ -83,7 +86,16 @@ def gather_console(input_fn: Optional[Callable[[str], str]] = None, out=None) ->
     pom = None
     if _ask_yes("3) ¿Agregar el pom.xml para revisarlo? [s/N]: ", input_fn):
         pom = _ask_path("   Ruta del pom.xml: ", False, input_fn, out)
-    return {"logs": compare + [main], "pom": pom, "main": main}
+    reports: List[str] = []
+    if _ask_yes("4) ¿Agregar reportes de las herramientas (PDF/JSON/XML de Checkmarx, PMD, SpotBugs…)? "
+                "Úsalo si no venían en la carpeta o el .zip [s/N]: ", input_fn):
+        while True:
+            p = _ask_path("   Ruta del reporte o carpeta (Enter para terminar): ", False, input_fn, out)
+            if not p:
+                break
+            reports.append(p)
+            out.write("   Agregado (%d). \n" % len(reports))
+    return {"logs": compare + [main], "pom": pom, "main": main, "reports": reports}
 
 
 # ====================================================================== ventanas (tkinter)
@@ -153,7 +165,7 @@ class Gui:
         ttk.Label(titles, text="Analizador de pipelines", font=self.f_title).pack(anchor="w")
         self._step = ttk.Label(titles, text="", font=self.f_small, foreground=self._secondary)
         self._step.pack(anchor="w", pady=(2, 0))
-        self._dots = tk.Canvas(header, width=64, height=14, highlightthickness=0, bd=0, bg=self._bg)
+        self._dots = tk.Canvas(header, width=90, height=14, highlightthickness=0, bd=0, bg=self._bg)
         self._dots.pack(side="right")
         ttk.Separator(root).pack(fill="x")
         # Franja de botones fija, empaquetada ANTES que el cuerpo: el cuerpo cede espacio y los botones conservan su forma.
@@ -335,31 +347,67 @@ class Gui:
             self._text(detail, small=True)
         return self._choice([("Sí", "yes"), ("No", "no")]) == "yes"
 
+    def _open_many(self, title: str) -> List[str]:
+        self.root.update()
+        paths = self.fd.askopenfilenames(parent=self.root, title=title, initialdir=self.last_dir, filetypes=REPORT_TYPES)
+        self._bring_to_front()
+        if paths:
+            self.last_dir = str(Path(paths[0]).parent)
+        return list(paths or [])
+
+    def ask_reports(self, step: str, chosen: List[str]) -> List[str]:
+        """Paso extra: reportes de las herramientas que no venían en la carpeta o el .zip (varios, archivos o carpetas)."""
+        reports: List[str] = []
+        while True:
+            self._clear(step)
+            self._text("¿Quieres agregar reportes de las herramientas?", bold=True)
+            self._text("Si el PDF de Checkmarx (o los XML/JSON de PMD, Checkstyle y SpotBugs) no venían en la carpeta o el .zip, "
+                       "agrégalos aquí para ver el archivo, la línea y la solución de cada hallazgo y compararlos con el log.\n"
+                       "Formatos: PDF, JSON, XML y Markdown. Puedes elegir varios archivos o una carpeta completa.", small=True)
+            if reports:
+                self._text("Agregados (%d):\n%s" % (len(reports), "\n".join("• " + Path(r).name for r in reports[-6:])
+                                                   + ("\n• …" if len(reports) > 6 else "")))
+            else:
+                self._text("\n".join(chosen), small=True)
+            action = self._choice([("Continuar" if reports else "Omitir", "done"), ("Agregar archivos…", "files"),
+                                   ("Agregar carpeta…", "dir")])
+            if action == "done":
+                return reports
+            if action == "files":
+                reports += [p for p in self._open_many("Selecciona los reportes") if p not in reports]
+            else:
+                p = self._open("dir", "Selecciona la carpeta con los reportes")
+                if p and p not in reports:
+                    reports.append(p)
+
     def ask_pom(self) -> Optional[str]:
         return self._open("file", "Selecciona el pom.xml", POM_TYPES)
 
     def gather(self) -> Dict[str, object]:
-        main = self.ask_log("Paso 1 de 3 · Log principal", "Selecciona la ejecución a analizar",
+        main = self.ask_log("Paso 1 de 4 · Log principal", "Selecciona la ejecución a analizar",
                             "• Carpeta de descarga de logs (p. ej. logs_123456)\n"
                             "• Archivo .zip de la descarga\n"
                             "• Archivo de log (.txt / .log)", required=True)
         chosen = ["Principal: " + main]
         compare: List[str] = []
         question = "¿Quieres agregar un log de comparación?"
-        while self.ask_yes("Paso 2 de 3 · Comparación", question,
+        while self.ask_yes("Paso 2 de 4 · Comparación", question,
                            "Una ejecución anterior del mismo pipeline, para ver qué mejoró o empeoró.\n\n"
                            + "\n".join(chosen)):
-            p = self.ask_log("Paso 2 de 3 · Comparación", "Selecciona la ejecución anterior",
+            p = self.ask_log("Paso 2 de 4 · Comparación", "Selecciona la ejecución anterior",
                              "Carpeta, .zip o archivo de log.", required=False)
             if p:
                 compare.append(p)
                 chosen.append("Comparación: " + p)
             question = "¿Quieres agregar otro log de comparación?"
         pom = None
-        if self.ask_yes("Paso 3 de 3 · pom.xml", "¿Quieres agregar el pom.xml?",
+        if self.ask_yes("Paso 3 de 4 · pom.xml", "¿Quieres agregar el pom.xml?",
                         "Se revisan su configuración de build, calidad y dependencias.\n\n" + "\n".join(chosen)):
             pom = self.ask_pom()
-        return {"logs": compare + [main], "pom": pom, "main": main}
+            if pom:
+                chosen.append("pom.xml: " + pom)
+        reports = self.ask_reports("Paso 4 de 4 · Reportes", chosen)
+        return {"logs": compare + [main], "pom": pom, "main": main, "reports": reports}
 
     # ---------------------------------------------------------------- avance
 
