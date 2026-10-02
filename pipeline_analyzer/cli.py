@@ -13,6 +13,7 @@ Ejemplos:
 """
 
 import argparse
+import copy
 import glob
 import re
 import sys
@@ -163,41 +164,54 @@ def main(argv=None) -> int:
             print("Ventanas no disponibles: %s.\nPara habilitarlas: %s\n%s\n"
                   % (why, fix, "Se usarán las rutas indicadas." if args.logs else "Continuando con preguntas en la consola…"),
                   file=sys.stderr)
-    if (not args.logs or args.gui) and not (args.logs and not use_gui):
-        if not use_gui and not (interactive_tty or args.no_gui):
-            build_parser().print_usage(sys.stderr)
-            print("Indica al menos un log, o ejecútalo en una terminal/escritorio para elegirlos.", file=sys.stderr)
-            return 2
+    base = copy.copy(args)
+    while True:
+        if (not args.logs or args.gui) and not (args.logs and not use_gui):
+            if not use_gui and not (interactive_tty or args.no_gui):
+                build_parser().print_usage(sys.stderr)
+                print("Indica al menos un log, o ejecútalo en una terminal/escritorio para elegirlos.", file=sys.stderr)
+                return 2
+            try:
+                if use_gui:
+                    gui = gui or Gui()
+                    sel = gui.gather()
+                else:
+                    sel = gather_console()
+            except (Cancelled, KeyboardInterrupt):
+                if gui:
+                    gui.destroy()
+                print("\nCancelado.", file=sys.stderr)
+                return 130
+            args.logs = sel["logs"]
+            args.pom = args.pom or sel["pom"]
+            args.reports = list(args.reports or []) + list(sel.get("reports") or [])
+            if args.out_dir is None:
+                args.out_dir = str(Path(sel["main"]).resolve().parent / "reporte_pipeline")
+        if args.out_dir is None:
+            args.out_dir = "reporte_pipeline"
         try:
-            if use_gui:
-                gui = Gui()
-                sel = gui.gather()
-            else:
-                sel = gather_console()
-        except (Cancelled, KeyboardInterrupt):
+            rc = _run(args, gui)
+        except Cancelled:
             if gui:
+                gui.close_progress()
                 gui.destroy()
             print("\nCancelado.", file=sys.stderr)
             return 130
-        args.logs = sel["logs"]
-        args.pom = args.pom or sel["pom"]
-        args.reports = list(args.reports or []) + list(sel.get("reports") or [])
-        if args.out_dir is None:
-            args.out_dir = str(Path(sel["main"]).resolve().parent / "reporte_pipeline")
-    if args.out_dir is None:
-        args.out_dir = "reporte_pipeline"
-    try:
-        rc = _run(args, gui)
+        except Exception as exc:
+            if gui:
+                gui.close_progress()
+                gui.show_error("No se pudo completar el análisis:\n\n%s" % exc)
+                gui.destroy()
+                return 1
+            raise
+        if gui and getattr(gui, "new_requested", False):  # «Nuevo análisis»: vuelve al inicio con los datos en blanco
+            gui.new_requested = False
+            args = copy.copy(base)
+            args.logs, args.gui = [], False       # se conservan --pom, --reports y --out-dir pasados por la línea de comandos
+            continue
         if gui:
             gui.destroy()
         return rc
-    except Exception as exc:
-        if gui:
-            gui.close_progress()
-            gui.show_error("No se pudo completar el análisis:\n\n%s" % exc)
-            gui.destroy()
-            return 1
-        raise
 
 
 def gui_main() -> int:

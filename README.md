@@ -17,7 +17,7 @@
 
 <div align="center">
 
-<img src="docs/images/asistente-seleccion.png" alt="Asistente interactivo: paso 1 de 3, selección de la ejecución a analizar" width="560">
+<img src="docs/images/asistente-seleccion.png" alt="Asistente interactivo: pantalla Nuevo análisis, con el log principal, la comparación, el pom.xml y los reportes" width="560">
 
 </div>
 
@@ -62,7 +62,7 @@ Cuando un pipeline falla, el log tiene miles de líneas, varias herramientas (te
 - **Revisión completa de lo compartido:** al pasar una carpeta o un `.zip` se buscan reportes en todos sus archivos y el reporte lista qué se leyó y qué se ignoró.
 - **Reportes:** consola, HTML, PDF, Markdown y JSON, cada uno en versión para compartir (secretos enmascarados) y versión completa de uso local.
 - **Historial:** cada análisis se guarda en su propia carpeta numerada y se genera un `historial-reportes.html`.
-- **Interfaz:** línea de comandos, asistente con ventanas nativas (tkinter) o preguntas en consola.
+- **Interfaz:** línea de comandos, ventanas nativas (tkinter) con aspecto propio de macOS, Windows 11 y Windows 10, con una sola pantalla «Nuevo análisis» en todos los sistemas, o preguntas en consola. Al terminar puedes abrir el reporte sin cerrar la ventana y empezar otro análisis.
 - **Multiplataforma y sin dependencias:** macOS, Linux y Windows; Python 3.8 o superior.
 
 ## Inicio rápido
@@ -96,13 +96,26 @@ python3 analizar_pipeline.py
 
 También puedes hacer doble clic en `analizar_pipeline.command` (macOS) o `analizar_pipeline.bat` (Windows).
 
-1. **Log principal:** eliges una carpeta de descarga (p. ej. `logs_123456`), un `.zip` o un archivo `.txt`/`.log`.
-2. **¿Agregar log de comparación?** Eliges la ejecución anterior de la misma forma. Puedes agregar varias.
-3. **¿Agregar `pom.xml`?** Opcional.
-4. **¿Agregar reportes de las herramientas?** Opcional, por si el PDF de Checkmarx o los XML/JSON de PMD, Checkstyle y SpotBugs no venían en la carpeta o el `.zip`. Puedes elegir varios archivos (PDF, JSON, XML, Markdown) o una carpeta completa, y agregar más hasta pulsar **Continuar**.
-5. Una ventana muestra el avance y, al terminar, el veredicto, los hallazgos por severidad y los archivos generados, con la opción de abrir el reporte.
+**En macOS, Windows y Linux** hay la misma pantalla, **Nuevo análisis**, con cuatro filas:
 
-Las ventanas usan los controles nativos del sistema (en macOS: botón principal azul, indicador de pasos y modo claro/oscuro). Sin entorno gráfico (servidor, SSH, Python sin tkinter) las mismas preguntas se hacen en la consola. `--no-gui` fuerza este modo y `--gui` abre las ventanas aunque pases rutas.
+| Fila | Qué se elige |
+|---|---|
+| **Log principal** (obligatorio) | Carpeta de descarga (p. ej. `logs_123456`), `.zip` o archivo `.txt`/`.log` |
+| **Comparación** | Una o varias ejecuciones anteriores, para ver qué mejoró o empeoró |
+| **pom.xml** | Para revisar su configuración de build, calidad y dependencias |
+| **Reportes** | PDF de Checkmarx o XML/JSON de PMD, Checkstyle y SpotBugs que no venían en la carpeta o el `.zip` (archivos o una carpeta completa) |
+
+Cada elemento agregado tiene su botón naranja **Quitar**; **Analizar** se habilita en cuanto eliges el log principal. La ventana es ancha para que se lean las rutas, se alarga sola al agregar archivos y vuelve a su alto base al quitarlos. Lo único que cambia entre sistemas es el aspecto nativo (ver más abajo) y el orden de los botones.
+
+Después, una ventana muestra el avance (con barra determinada) y, al terminar, el veredicto, los hallazgos por severidad y los archivos generados:
+
+- **Abrir reporte** lo abre en el navegador **sin cerrar la ventana**; puedes abrirlo las veces que quieras. Con doble clic (o Enter) sobre un archivo de la lista también se abre.
+- **Nuevo análisis** regresa al inicio para analizar otra ejecución. Se conservan `--pom`, `--reports` y `--out-dir` si los pasaste por línea de comandos.
+- **Cerrar** termina el programa.
+- Durante el análisis hay un botón **Cancelar** (también cerrar la ventana, o ⌘. en macOS) que pide confirmación antes de detenerlo; en macOS, ⌘W y ⌘Q cierran la ventana.
+- La tecla **Esc no cierra ni cancela nada** en ningún sistema.
+
+**Apariencia nativa según el sistema y su versión:** macOS usa los controles Aqua (botón principal azul, modo claro/oscuro del sistema); Windows 11 usa Segoe UI Variable y Windows 10 Segoe UI, con el orden de botones de Windows (el principal a la izquierda); Linux usa el tema `clam`. En Windows y Linux la ventana se ve siempre en modo claro. Sin entorno gráfico (servidor, SSH, Python sin tkinter) se hacen las mismas preguntas en la consola, una por una: log principal, ¿agregar comparación?, ¿agregar `pom.xml`? y ¿agregar reportes de las herramientas? `--no-gui` fuerza este modo y `--gui` abre las ventanas aunque pases rutas.
 
 ### Con argumentos
 
@@ -154,7 +167,7 @@ python3 -m pipeline_analyzer logs_123456 --fail-on HIGH --formats none
 | `.zip` de la descarga | Igual que la carpeta, sin descomprimir |
 | Carpeta con varias `logs_*` o `.zip` | Una ejecución por cada una, comparadas por fecha |
 | Log único (`.txt`, `.log`, `consoleText`, job log de GitLab…) | Una ejecución |
-| Reportes de herramientas (`.pdf`, `.json`, `.xml`, `.md`) dentro de la carpeta o el `.zip`, o con `--reports` / el paso 4 del asistente | Detalle por regla, archivo y línea; el PDF o `.md` de Checkmarx se cruza además con el log |
+| Reportes de herramientas (`.pdf`, `.json`, `.xml`, `.md`) dentro de la carpeta o el `.zip`, o con `--reports` / la fila «Reportes» de la ventana | Detalle por regla, archivo y línea; el PDF o `.md` de Checkmarx se cruza además con el log |
 
 <details>
 <summary>Estructura típica de una descarga de Azure DevOps y cómo se usa cada parte</summary>
@@ -201,6 +214,8 @@ Cada ejecución crea una subcarpeta nueva dentro de la carpeta de salida, con n�
 | `reporte_pipeline/historial-reportes.html` | Historial de todos los análisis, del más nuevo al más viejo, con filtro y enlaces a cada archivo |
 
 **Orden de los reportes.** Primero lo que bloquea el pipeline y lo que tú puedes corregir; al final, *Recomendaciones para quien administra el pipeline* (configuración del SCM, que normalmente no está al alcance del equipo de desarrollo) y las validaciones de seguridad de referencia. Si algo del pipeline afecta a que tu proyecto pase, se etiqueta con `⚙ pipeline:` y, en HTML y PDF, un clic lleva a la causa.
+
+**Diseño del HTML.** El veredicto es el título de la página y debajo hay una **franja del pipeline** con una parada por verificación (verde: pasa, rojo: bloquea, gris: no se ejecutó). En pantallas anchas, un **índice lateral** fijo marca con un punto rojo las secciones que bloquean; en móvil pasa arriba. Los pasos de la ruta que bloquean llevan una barra roja. Usa la tipografía del sistema (San Francisco en Mac, Segoe UI en Windows), modo claro y oscuro automáticos, y se imprime con todas las secciones abiertas.
 
 **HTML con secciones plegables.** Siempre visibles: el resumen, la *ruta para pasar el pipeline* y los *resultados de CxOne* con sus hallazgos y soluciones. Plegadas (solo título y un dato breve, se expanden con un clic, desde el menú o desde un enlace interno): plan de acción, hallazgos del proyecto, comparativa, ejecuciones, archivos revisados, recomendaciones del pipeline y validaciones. Al imprimir se abren todas.
 
@@ -288,6 +303,7 @@ pipeline_analyzer/
 ├── plan.py           Ruta para pasar el pipeline
 ├── compare.py        Comparativa con tendencia y diff de hallazgos
 ├── report.py         Renderizado: consola, Markdown, HTML, PDF y JSON
+├── theme.py          Estilos compartidos del HTML y del historial (colores, tipografía del sistema)
 ├── pdf.py            Generador de PDF propio (solo biblioteca estándar)
 ├── index_page.py     Historial de análisis
 ├── cli.py            Línea de comandos
@@ -316,6 +332,7 @@ Reglas del proyecto: **solo biblioteca estándar**, sintaxis compatible con Pyth
 - El log no incluye el detalle de las violaciones de PMD, del hallazgo SAST ni de los CVE de SCA. Con `--reports` y los reportes de las herramientas se obtiene regla, archivo y línea. El lector de CxOne está basado en el formato de su API y puede requerir ajustes con otras variantes.
 - El lector del PDF de Checkmarx usa patrones y se probó con el «Scan Report» de CxOne convertido a Markdown: si otra plantilla no se reconoce, `python3 -m pipeline_analyzer --dump-pdf reporte.pdf` muestra qué texto se lee. No admite PDF cifrados ni escaneados.
 - Las soluciones propuestas son una guía (con ejemplos para Java/Spring/Maven); confirma cada hallazgo en CxOne antes de marcarlo como *Not Exploitable*.
+- Con tkinter (biblioteca estándar) las ventanas no pueden aplicar el efecto Mica ni el modo oscuro de Windows: allí se ve el aspecto nativo claro. El botón naranja «Quitar» de macOS está dibujado por el programa, no es un control nativo.
 - Los marcadores de sanitización (`<IP_3>`, `<HOST_1>`…) se muestran tal cual.
 - `KNOWN_VULNERABLE` es una lista corta de CVE críticos conocidos y no reemplaza a un análisis de composición de software (SCA).
 

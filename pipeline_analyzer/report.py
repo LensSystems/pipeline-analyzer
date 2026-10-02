@@ -13,6 +13,7 @@ from .pdf import AMBER, BAND, BLUE, GREEN, MUTED, RED, PdfDoc
 from . import tool_reports as TR
 from .cxone_pdf import reconcile
 from . import cxone_view as CV
+from . import theme as TH
 from .plan import build_plan, validation_commands
 from .rules import SEVERITIES, SEVERITY_RANK, Finding, finding_anchor, is_pipeline_owned, pipeline_anchor
 
@@ -479,43 +480,58 @@ def _finding_md(f: Finding, pmap: Optional[Dict[str, Finding]] = None, anchor: b
 
 # ====================================================================== HTML
 
-_CSS = CV.CSS_VARS + CV.CSS + """
-:root{--bg:#f7f7f5;--card:#fff;--fg:#1d1d1b;--muted:#6b6b66;--border:#e3e2dc;--ok:#1f7a4d;--okbg:#e3f3ea;
---bad:#b42318;--badbg:#fde8e6;--warn:#9a6700;--warnbg:#fff4d6;--info:#2f5fa7;--infobg:#e6eefb;--code:#f1f0ec}
-@media (prefers-color-scheme:dark){:root{--bg:#161615;--card:#1f1f1d;--fg:#ecebe6;--muted:#a3a29b;--border:#34332f;
---ok:#5cc58f;--okbg:#17301f;--bad:#ff8a7a;--badbg:#3a1c18;--warn:#f2c14e;--warnbg:#342a10;--info:#8fb4f5;--infobg:#18243a;--code:#2a2926}}
-*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}body{overflow-wrap:anywhere;margin:0;background:var(--bg);color:var(--fg);font:15px/1.7 system-ui,-apple-system,"Segoe UI",sans-serif}
-main{width:100%;max-width:none;margin:0 auto;padding:clamp(12px,2.5vw,40px) clamp(12px,3vw,48px) 60px}h1{font-size:26px;margin:0 0 4px}h2{font-size:20px;margin:56px 0 18px}
-.sub{color:var(--muted);margin:0 0 24px}.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:22px 26px;margin:0 0 8px}
-.verdict{font-weight:600;margin-bottom:20px;font-size:16px}.gates{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,180px),1fr));gap:16px}
-.gate{border:1px solid var(--border);border-radius:10px;padding:14px 16px;background:var(--card)}.gate b{display:block;font-size:13px;color:var(--muted);font-weight:500}
-.gate .st{font-weight:700;font-size:15px}.gate .d{font-size:13px;color:var(--muted)}
+_CSS = TH.TOKENS + CV.CSS_VARS + CV.CSS + """
+main{min-width:0}h1{margin:0}h2{font-size:22px;line-height:1.25;font-weight:650;letter-spacing:-.01em;margin:64px 0 18px}h3{font-size:17px;margin:34px 0 12px}
+.sub{color:var(--muted);margin:0 0 24px;max-width:78ch}p{max-width:78ch}
+.shell{display:grid;grid-template-columns:232px minmax(0,1fr);gap:clamp(28px,5vw,72px);max-width:1360px;margin:0 auto;padding:clamp(16px,3vw,44px)}
+.rail{position:sticky;top:28px;align-self:start;max-height:calc(100vh - 56px);overflow:auto;padding-bottom:16px}
+.rail .app{font-weight:650;font-size:15px;margin:0 10px 14px}.rail a{display:flex;gap:11px;align-items:center;padding:7px 10px;border-radius:8px;color:var(--fg);text-decoration:none;font-size:14px;line-height:1.3}
+.rail a:hover{background:var(--code)}.rail a i{flex:none;width:8px;height:8px;border-radius:50%;background:var(--c,var(--border))}
+.rail .ok{--c:var(--ok);color:inherit}.rail .bad{--c:var(--bad);color:inherit}.rail .warn{--c:var(--warn);color:inherit}
+.mast{padding:6px 0 8px}.mast .kick{color:var(--muted);font-size:13px;margin:0 0 10px}
+.mast h1{color:var(--fg);font-size:clamp(25px,3.4vw,34px);line-height:1.2;font-weight:700;letter-spacing:-.02em;display:flex;gap:14px;align-items:flex-start;max-width:30ch}
+.mast h1::before{content:"";flex:none;width:12px;height:12px;border-radius:50%;margin-top:.5em;background:var(--c)}
+.mast.m-ok{--c:var(--ok)}.mast.m-bad{--c:var(--bad)}
+.strip{display:flex;overflow-x:auto;padding:30px 2px 6px;margin:22px 0 14px}
+.node{flex:1 0 96px;position:relative;text-align:center;padding:30px 4px 0;min-width:96px}
+.node::before{content:"";position:absolute;top:10px;left:-50%;right:50%;height:2px;background:var(--border)}.node:first-child::before{display:none}
+.node i{position:absolute;top:0;left:50%;margin-left:-11px;width:22px;height:22px;border-radius:50%;background:var(--c);box-shadow:0 0 0 5px var(--bg);
+display:grid;place-items:center;font-style:normal;z-index:1}.node i svg{display:block}
+.node b{display:block;font-size:13px;font-weight:600;line-height:1.25}.node small{display:block;font-size:12px;color:var(--muted);margin-top:2px;line-height:1.3}
+.n-ok{--c:var(--ok)}.n-bad{--c:var(--bad)}.n-warn{--c:var(--warn)}.n-na{--c:#8a92a2}
+.counts{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0 0}
+.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:22px 26px;margin:0 0 10px}
 .ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}
-.tbl{width:100%;overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:14px;table-layout:auto}td code{white-space:normal}th,td{padding:10px 14px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}td{overflow-wrap:anywhere;word-break:break-word}td:last-child{min-width:120px}
-th{font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--muted);font-weight:600}td.num{font-variant-numeric:tabular-nums}
-.pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;font-weight:600;white-space:nowrap}
+.tbl{width:100%;overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:14px;table-layout:auto}td code{white-space:normal}
+th,td{padding:11px 14px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}td{overflow-wrap:anywhere;word-break:break-word}td:last-child{min-width:120px}
+th{font-size:13px;color:var(--muted);font-weight:600}td.num{font-variant-numeric:tabular-nums}tr:last-child>td{border-bottom:0}
+.pill{display:inline-block;padding:1px 9px;border-radius:99px;font-size:12px;font-weight:600;white-space:nowrap}
 .p-ok{background:var(--okbg);color:var(--ok)}.p-bad{background:var(--badbg);color:var(--bad)}.p-warn{background:var(--warnbg);color:var(--warn)}.p-info{background:var(--infobg);color:var(--info)}.p-na{color:var(--muted)}
 .sev-CRITICAL,.sev-HIGH{background:var(--badbg);color:var(--bad)}.sev-MEDIUM{background:var(--warnbg);color:var(--warn)}.sev-LOW,.sev-INFO{background:var(--infobg);color:var(--info)}
-details{background:var(--card);border:1px solid var(--border);border-radius:10px;margin:14px 0}summary{cursor:pointer;padding:14px 18px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-summary .t{font-weight:600;flex:1;min-width:min(100%,220px)}summary .c{color:var(--muted);font-size:13px}.fb{padding:4px 22px 22px}.fb p{margin:12px 0}.fb b{display:block;margin:18px 0 6px}.fb ul,.fb ol{margin:8px 0 12px}.fb li{margin:6px 0}
-.fb ol{padding-left:20px;margin:6px 0}code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
-pre{background:var(--code);padding:10px 12px;border-radius:6px;overflow-x:auto;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;max-width:100%}.ev li{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;overflow-wrap:anywhere;white-space:pre-wrap}
-.counts{display:flex;gap:10px;flex-wrap:wrap;margin-top:20px}.diffcols{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:12px}.diffcols>*,.gates>*{min-width:0}
-.diffcols ul{padding-left:18px;margin:6px 0}.dep{background:var(--infobg);border-radius:10px;padding:12px 16px;margin:20px 0 0}.chip{display:inline-block;background:var(--infobg);color:var(--info);border:1px solid var(--info);border-radius:8px;padding:1px 9px;font-size:12px;font-weight:600;text-decoration:none;margin:2px 4px 2px 0;line-height:1.35}.chip:hover{text-decoration:underline}
-details:target{outline:2px solid var(--info)}details,h2{scroll-margin-top:12px}h3{font-size:16px;margin:32px 0 12px}a{color:var(--info)}
-.nav{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 28px}.nav a{background:var(--card);border:1px solid var(--border);border-radius:99px;padding:3px 12px;text-decoration:none;font-size:13px;color:var(--fg)}.nav a:hover{border-color:var(--info);color:var(--info)}
-.step{display:flex;gap:18px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:22px 26px;margin:20px 0}.step .sn{flex:none;width:32px;height:32px;border-radius:50%;background:var(--info);color:#fff;display:grid;place-items:center;font-weight:700}
-.step .sb{flex:1;min-width:0}.step h3{margin:0 0 10px;font-size:17px}.acts{padding-left:22px;margin:14px 0}.acts>li{margin:18px 0}.acts ul{margin:8px 0 0;padding-left:18px;color:var(--muted);font-size:14px}
+details{background:var(--card);border:1px solid var(--border);border-radius:10px;margin:12px 0}summary{cursor:pointer;padding:14px 18px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+summary .t{font-weight:600;flex:1;min-width:min(100%,220px)}summary .c{color:var(--muted);font-size:13px}
+.fb{padding:4px 24px 22px}.fb p{margin:12px 0}.fb b{display:block;margin:18px 0 6px}.fb ul,.fb ol{margin:8px 0 12px;padding-left:22px}.fb li{margin:6px 0}
+pre{background:var(--code);padding:12px 14px;border-radius:8px;overflow-x:auto;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;max-width:100%;margin:10px 0}
+.ev li{font-family:var(--mono);font-size:12.5px;overflow-wrap:anywhere;white-space:pre-wrap}
+.diffcols{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:14px}.diffcols>*{min-width:0}.diffcols ul{padding-left:18px;margin:8px 0}
+.dep{background:var(--infobg);border-radius:10px;padding:12px 16px;margin:20px 0 0}
+.chip{display:inline-block;background:var(--infobg);color:var(--info);border:1px solid var(--info);border-radius:8px;padding:1px 9px;font-size:12px;font-weight:600;text-decoration:none;margin:2px 4px 2px 0;line-height:1.35}.chip:hover{text-decoration:underline}
+details:target{outline:2px solid var(--info)}details,h2{scroll-margin-top:16px}
+.step{display:flex;gap:18px;padding:26px 0 26px 20px;margin:0;border-top:1px solid var(--border);border-left:3px solid transparent}
+.step.blk{border-left-color:var(--bad)}.step .sn{flex:none;width:30px;height:30px;border-radius:50%;background:var(--fg);color:var(--bg);display:grid;place-items:center;font-weight:700;font-size:14px}
+.step.blk .sn{background:var(--bad);color:#fff}.step .sb{flex:1;min-width:0}.step h3{margin:2px 0 10px;font-size:18px}.acts{padding-left:22px;margin:14px 0}.acts>li{margin:18px 0}.acts ul{margin:8px 0 0;padding-left:18px;color:var(--muted);font-size:14px}
 .done{background:var(--okbg);color:var(--ok);border-radius:10px;padding:10px 14px;margin:20px 0 0}.hint{background:var(--infobg);border-radius:10px;padding:10px 14px;margin:14px 0;font-size:14px}
 .tooldet{background:var(--bg);margin:16px 0}.tooldet .tbl{padding:0 12px 10px}.tooldet details{margin:6px 12px}
-.warnbox{background:var(--warnbg);color:var(--warn);border:1px solid var(--warn);border-radius:8px;padding:10px 14px;margin:0 0 18px;font-weight:600}
+.warnbox{background:var(--warnbg);color:var(--warn);border:1px solid var(--warn);border-radius:10px;padding:12px 16px;margin:0 0 22px;font-weight:600}
 .sec{background:none;border:0;border-top:1px solid var(--border);border-radius:0;margin:0}.sec>summary{padding:22px 4px;list-style:none;gap:14px}
 .sec>summary::-webkit-details-marker{display:none}.sec>summary::before{content:'▸';color:var(--muted);font-size:15px;width:14px;transition:transform .15s}
 .sec[open]>summary::before{transform:rotate(90deg)}.sec>summary:hover h2{color:var(--info)}.sec>summary h2{margin:0;flex:none;font-size:18px}
 .sec .sc{color:var(--muted);font-size:13px;margin-left:auto}.secb{padding:0 4px 32px}.secb>details:first-child{margin-top:0}
-footer{color:var(--muted);font-size:13px;margin-top:56px}
-.brand{position:fixed;right:14px;bottom:8px;font-size:12px;font-weight:600;letter-spacing:.06em;color:var(--muted);opacity:.55;pointer-events:none}
-@media print{.brand{position:static;text-align:right}}
+footer{color:var(--muted);font-size:13px;margin-top:64px}
+.brand{position:fixed;right:14px;bottom:8px;font-size:12px;font-weight:600;color:var(--muted);opacity:.55;pointer-events:none}
+@media (max-width:1000px){.shell{grid-template-columns:minmax(0,1fr);gap:18px}.rail{position:static;max-height:none;padding:0 0 4px;overflow-x:auto}.rail nav{display:flex;gap:6px}
+.rail .app{display:none}.rail a{white-space:nowrap;border:1px solid var(--border);border-radius:99px;background:var(--card)}h2{margin-top:44px}.step{padding-left:12px;gap:12px}}
+@media print{.brand{position:static;text-align:right}.rail{display:none}.shell{display:block}}
 """
 
 _TREND_HTML = {IMPROVED: ("p-ok", "▲ mejoró"), WORSE: ("p-bad", "▼ empeoró"), SAME: ("p-na", "= igual"), NA: ("p-na", "·")}
@@ -529,43 +545,77 @@ def _status_cls(st: str) -> str:
     return {"OK": "ok", "PASO": "ok", "FALLO": "bad"}.get(st, "warn")
 
 
+def _glyph(d: str) -> str:
+    """Marca dibujada en SVG (no con texto): queda centrada en el círculo sin depender de la tipografía."""
+    return ("<svg viewBox='0 0 12 12' width='12' height='12' aria-hidden='true'><path d='%s' fill='none' stroke='#fff' stroke-width='1.9' "
+            "stroke-linecap='round' stroke-linejoin='round'/></svg>" % d)
+
+
+_G_OK, _G_BAD = _glyph("M2.6 6.4l2.4 2.4 4.4-5"), _glyph("M3 3l6 6M9 3l-6 6")
+_G_WARN, _G_NA = _glyph("M6 2.8v3.6M6 9.1v.1"), _glyph("M3 6h6")
+_NODE = {"OK": ("ok", _G_OK), "PASO": ("ok", _G_OK), "FALLO": ("bad", _G_BAD), "ALERTA": ("warn", _G_WARN)}
+
+
+def _strip_html(a: Analysis) -> str:
+    """Franja del pipeline: un nodo por verificación, en rojo las que bloquean (lo mismo que el icono de la ventana)."""
+    nodes = []
+    for g in a.gates():
+        cls, mark = _NODE.get(g["status"], ("na", _G_NA))
+        nodes.append("<div class='node n-%s' title='%s'><i>%s</i><b>%s</b><small>%s</small></div>"
+                     % (cls, _e("%s: %s" % (g["status"], g["detail"])), mark, _e(g["name"]), _e(g["detail"][:42])))
+    return "<div class='strip' role='list' aria-label='Verificaciones del pipeline'>%s</div>" % "".join(nodes) if nodes else ""
+
+
+def _rail_html(a: Analysis) -> str:
+    """Índice lateral con un punto de estado: rojo si la sección contiene algo que bloquea."""
+    steps = a.pass_plan()
+    blocks = any(st["blocks"] for st in steps)
+    cx_bad = any(g["name"].startswith("CxOne") and g["status"] == "FALLO" for g in a.gates())
+    items = [("resumen", "Resumen", ""), ("ruta", "Ruta para pasar", "bad" if blocks else "ok")]
+    if a.cxone_summary():
+        items.append(("cxone", "Resultados de CxOne", "bad" if cx_bad else "ok"))
+    items += [("plan", "Plan de acción", ""), ("hallazgos", "Hallazgos del proyecto", "")]
+    if len(a.runs) > 1:
+        items.append(("comparativa", "Comparativa", ""))
+    items += [("ejecuciones", "Ejecuciones", "")]
+    if a.review and a.review.get("files"):
+        items.append(("archivos", "Archivos revisados", ""))
+    if a.pipeline_findings():
+        items.append(("pipeline-recs", "Recomendaciones del pipeline", "warn" if any(f.blocks for f in a.pipeline_findings()) else ""))
+    if a.checklist():
+        items.append(("validaciones", "Validaciones", ""))
+    return ("<aside class='rail'><nav aria-label='Secciones'><div class='app'>Análisis de pipeline</div>%s</nav></aside>"
+            % "".join("<a href='#%s' class='%s'><i></i>%s</a>" % (h, c, _e(t)) for h, t, c in items))
+
+
 def render_html(a: Analysis, full: bool = False) -> str:
     """``full=True``: versión de uso local, con valores reales y evidencia completa (no compartir)."""
     H: List[str] = []
     H.append("<!doctype html><html lang='es'><head><meta charset='utf-8'>"
              "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-             "<title>Reporte de pipeline%s</title><style>%s</style></head><body><main>" % (" (completo)" if full else "", _CSS))
-    H.append("<h1>Reporte de análisis de pipeline%s</h1>" % (" — versión completa" if full else ""))
-    if full:
-        H.append("<div class='warnbox'>⚠ PRECAUCIÓN - INFORMACIÓN CONFIDENCIAL. Este documento contiene valores reales (secretos, credenciales, hosts y correos) y evidencia sin enmascarar. Trátalo como material sensible: no lo compartas, reenvíes ni adjuntes a tickets o chats; si se expone por error, rota las credenciales que aparezcan en él.</div>")
-    H.append("<p class='sub'>%d ejecución(es) · generado %s · pipeline-analyzer %s</p>"
-             % (len(a.runs), datetime.now().strftime("%Y-%m-%d %H:%M"), __version__))
-    H.append("<nav class='nav'><a href='#ruta'>Ruta para pasar</a>%s<a href='#plan'>Plan de acción</a><a href='#hallazgos'>Hallazgos del proyecto</a>%s%s</nav>"
-             % ("<a href='#cxone'>Resultados de CxOne</a>" if a.cxone_summary() else "",
-                "<a href='#pipeline-recs'>Recomendaciones del pipeline</a>" if a.pipeline_findings() else "",
-                "<a href='#validaciones'>Validaciones</a>" if a.checklist() else ""))
-
-    # Resumen
-    H.append("<h2>Resumen — %s</h2><div class='card'>" % _e(a.last.label))
+             "<title>Reporte de pipeline%s</title><style>%s</style></head><body><div class='shell'>" % (" (completo)" if full else "", _CSS))
     ok = a.verdict().startswith("Todos")
     pmap = a.pipeline_map()
-    H.append("<div class='verdict %s'>%s</div><div class='gates'>" % ("ok" if ok else "bad", _e(a.verdict())))
-    for g in a.gates():
-        H.append("<div class='gate'><b>%s</b><div class='st %s'>%s</div><div class='d'>%s</div>%s</div>"
-                 % (_e(g["name"]), _status_cls(g["status"]), _e(g["status"]), _e(g["detail"]),
-                    "".join(_chip(pmap[u]) for u in g.get("related", []) if u in pmap)))
-    H.append("</div><div class='counts'>")
-    for s, n in _sev_counts(a.project_findings()).items():
+    H.append(_rail_html(a))
+    H.append("<main>")
+    if full:
+        H.append("<div class='warnbox'>⚠ PRECAUCIÓN - INFORMACIÓN CONFIDENCIAL. Este documento contiene valores reales (secretos, credenciales, hosts y correos) y evidencia sin enmascarar. Trátalo como material sensible: no lo compartas, reenvíes ni adjuntes a tickets o chats; si se expone por error, rota las credenciales que aparezcan en él.</div>")
+    # Encabezado: el veredicto en una frase y, debajo, la franja del pipeline (una parada por verificación)
+    H.append("<header class='mast m-%s' id='resumen'><p class='kick'>Reporte de análisis%s · %s · %d ejecución(es) · pipeline-analyzer %s</p><h1>%s</h1>"
+             % ("ok" if ok else "bad", " (versión completa)" if full else "", _e(a.last.label), len(a.runs), __version__, _e(a.verdict())))
+    H.append(_strip_html(a))
+    H.append("<div class='counts'>")
+    for sv, n in _sev_counts(a.project_findings()).items():
         if n:
-            H.append("<span class='pill sev-%s'>%s: %d</span>" % (s, s, n))
+            H.append("<span class='pill sev-%s'>%s: %d</span>" % (sv, sv, n))
     H.append("</div>")
     blockers = [f for f in a.pipeline_findings() if f.blocks]
     if blockers:
         H.append("<div class='dep'>⚙ <b>Depende del pipeline</b> (clic para ver la causa y qué pedir al equipo que lo administra): %s</div>"
                  % " ".join(_chip(f) for f in blockers))
     if pmap:
-        H.append("<p class='sub'><a href='#pipeline-recs'>Ver las %d recomendaciones para quien administra el pipeline ↓</a></p>" % len(pmap))
-    H.append("</div>")
+        H.append("<p class='sub' style='margin:14px 0 0'><a href='#pipeline-recs'>Ver las %d recomendaciones para quien administra el pipeline ↓</a></p>" % len(pmap))
+    H.append("</header>")
 
     # ---- Lo principal, siempre visible: qué bloquea y qué puede resolver el equipo de desarrollo
     H.append(_plan_html(a, full, pmap))
@@ -650,7 +700,7 @@ def render_html(a: Analysis, full: bool = False) -> str:
                       "%d de %d en alerta" % (alerts, len(a.checklist()))))
 
     H.append("<footer>Las causas probables son heurísticas basadas en el log: confírmalas en SonarQube, "
-             "CxOne y los reportes de cada herramienta.<br>%s · pipeline-analyzer %s</footer></main>"
+             "CxOne y los reportes de cada herramienta.<br>%s · pipeline-analyzer %s</footer></main></div>"
              "<div class='brand' aria-hidden='true'>%s</div><script>%s</script></body></html>" % (BRAND, __version__, BRAND, _JS))
     return "".join(H)
 
@@ -802,8 +852,8 @@ def _plan_html(a: Analysis, full: bool, pmap: Dict[str, Finding]) -> str:
              % (len(steps), "%d bloquea(n)" % nb if nb else "ninguno bloquea"))
     has_static_report = any(t in a.tool_reports for t in _STATIC_TOOLS)
     for s in steps:
-        H.append("<section class='step' id='paso-%d'><div class='sn'>%d</div><div class='sb'><h3>%s <span class='pill %s'>%s</span></h3>"
-                 "<p class='sub'>%s</p>" % (s["n"], s["n"], _e(s["title"]), "p-bad" if s["blocks"] else "p-info",
+        H.append("<section class='step%s' id='paso-%d'><div class='sn'>%d</div><div class='sb'><h3>%s <span class='pill %s'>%s</span></h3>"
+                 "<p class='sub'>%s</p>" % (" blk" if s["blocks"] else "", s["n"], s["n"], _e(s["title"]), "p-bad" if s["blocks"] else "p-info",
                                             "Bloquea" if s["blocks"] else "No bloquea", _e(s["why"])))
         if s["gates"]:
             H.append("<p>Verificaciones en rojo: %s</p>" % " ".join(

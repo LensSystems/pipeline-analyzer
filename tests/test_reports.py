@@ -80,7 +80,7 @@ class HtmlPlanTest(unittest.TestCase):
         first = sorted(d for d in Path(out).iterdir() if d.is_dir())[0]
         page = (first / "reporte.html").read_text(encoding="utf-8")
         self.assertIn("Ruta para pasar el pipeline", page)
-        self.assertIn("class='step'", page)
+        self.assertRegex(page, r"class='step( blk)?'")
         self.assertLess(page.index("id='ruta'"), page.index("id='hallazgos'"))
         self.assertIn("href='#f-", page)                       # enlaces a cada hallazgo del proyecto
         self.assertIn("id='f-", page)

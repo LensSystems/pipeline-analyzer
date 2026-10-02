@@ -11,7 +11,7 @@
 - **Textos para el usuario en español.** Los identificadores del código van en inglés.
 - **Las recomendaciones** (título, causa, pasos, comandos) van en `pipeline_analyzer/knowledge.py`, no dentro de `rules.py`.
 - **La salida de consola** pasa por `compat.console_safe()`; el avance va a *stderr*.
-- **Las pruebas no abren ventanas reales**: simula `cli.gui_status` o los diálogos y ejecútalas con stdin cerrado.
+- **Las pruebas no abren ventanas reales** por defecto: simula `cli.gui_status` o los diálogos y ejecútalas con stdin cerrado. Las pocas pruebas que sí usan tkinter son opcionales y se activan en tu equipo con `PIPELINE_ANALYZER_GUI_TESTS=1` (dependen de la pantalla, el foco y el escalado, por eso no corren en CI).
 - **Privacidad:** no incluyas logs, `pom.xml` ni reportes reales en commits, issues ni pull requests. Usa datos sintéticos o sanitizados.
 
 ## Entorno de desarrollo
