@@ -39,6 +39,13 @@ def _static_value(tool: str) -> Callable[[Dict[str, Any]], Any]:
     return f
 
 
+def _sum_keys(m, engine, keys):
+    row = _get(m, "cxone", "engines", engine)
+    if not row or not row.get("ran", True):
+        return None
+    return sum((row.get(k) or 0) for k in keys)
+
+
 def _tests_failed(m):
     t = m.get("tests") or {}
     if not t.get("total"):
@@ -66,6 +73,9 @@ METRICS: List[Tuple[str, str, Callable[[Dict[str, Any]], Any], Optional[str]]] =
     ("cx.sast_high", "CxOne SAST Critical+High", lambda m: _sum(m, "cxone", "engines", "SAST"), "lower"),
     ("cx.sast_medium", "CxOne SAST Medium", lambda m: _get(m, "cxone", "engines", "SAST", "medium"), "lower"),
     ("cx.sca_high", "CxOne SCA Critical+High", lambda m: _sum(m, "cxone", "engines", "SCA"), "lower"),
+    ("cx.sast_low", "CxOne SAST Low", lambda m: _get(m, "cxone", "engines", "SAST", "low"), "lower"),
+    ("cx.sca_medium_low", "CxOne SCA Medium+Low", lambda m: _sum_keys(m, "SCA", ("medium", "low")), "lower"),
+    ("cx.total", "CxOne resultados totales", lambda m: _get(m, "cxone", "total_results"), "lower"),
     ("cx.breaker", "Breaker CxOne", lambda m: _get(m, "cxone", "breaker"), "status"),
     ("tmas.high", "TMAS Critical+High", lambda m: _sum(m, "tmas"), "lower"),
     ("static.checkstyle", "Checkstyle (violaciones)", _static_value("checkstyle"), "lower"),

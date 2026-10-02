@@ -343,8 +343,9 @@ def _sonar(log: PipelineLog) -> Dict[str, Any]:
 # ---------------------------------------------------------------- CxOne
 
 CX_ROW_RE = re.compile(
-    r"\|\s*(SAST|SCA|SCS|IAC|APIs|CONTAINERS|TOTAL)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\w+)\s*\|"
+    r"\|\s*(SAST|SCA|SCS|IAC|APIs|CONTAINERS|TOTAL)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*\|"
 )
+CX_SECRET_ROW_RE = re.compile(r"\|\s*(Secret Detection|Scorecard)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*\|")
 CX_BREAKER_RE = re.compile(r"\|\s*(SAST|SCA)\s*\|\s*(FALLO|PASO)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(.*?)\s*\|")
 
 
@@ -358,13 +359,39 @@ def _cxone(log: PipelineLog) -> Dict[str, Any]:
         engines = {}
         for m in CX_ROW_RE.finditer(t):
             vals = [_int(x) for x in m.groups()[1:6]]
-            engines[m.group(1)] = dict(zip(["critical", "high", "medium", "low", "info"], vals), status=m.group(7))
+            status = m.group(7)
+            row = dict(zip(["critical", "high", "medium", "low", "info"], vals), status=status)
+            row["ran"] = status != "-" and any(v is not None for v in vals)  # «-» = motor no ejecutado en este escaneo
+            engines[m.group(1).upper() if m.group(1) != "APIs" else "APIs"] = row
         out["engines"] = engines
         m = re.search(r"Risk Level: ([^\t\n]+)", t)
         out["risk_level"] = m.group(1).strip() if m else None
-        m = re.search(r"\|\s*Secret Detection\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\w+)", t)
+        m = re.search(r"Total Results:\s*(\d+)", t)
         if m:
-            out["secrets"] = {"critical": _int(m.group(1)), "high": _int(m.group(2)), "status": m.group(6)}
+            out["total_results"] = int(m.group(1))
+        for key, rx in (("project", r"Project Name:\s*(\S+)"), ("scan_id", r"Scan ID:\s*(\S+)"),
+                        ("created_at", r"Created At:\s*([0-9\-]+,\s*[0-9:]+)"), ("branch", r"Branch name:\s*(\S+)"),
+                        ("scan_types", r"--scan-types[ ,]+([a-z,]+)"), ("task_version", r"Version\s*:\s*(\d+\.\d+\.\d+)"),
+                        ("cli_version", r"Version file content:\s*(\S+)")):
+            m = re.search(rx, t)
+            if m:
+                out[key] = m.group(1).strip()
+        sup = {}
+        for m in CX_SECRET_ROW_RE.finditer(t):
+            vals = [_int(x) for x in m.groups()[1:6]]
+            sup[m.group(1)] = dict(zip(["critical", "high", "medium", "low", "info"], vals), status=m.group(7),
+                                   ran=m.group(7) != "-" and any(v is not None for v in vals))
+        if sup:
+            out["supply_chain"] = sup
+        if "Secret Detection" in sup:
+            sd = sup["Secret Detection"]
+            out["secrets"] = {"critical": sd["critical"], "high": sd["high"], "status": sd["status"]}
+        m = re.search(r"SCS scan warning:\s*(.+)", t)
+        if m:
+            out["scs_warning"] = m.group(1).strip()[:220]
+        m = re.search(r"Additional parameter: --sast-filter\s+Additional parameter:\s*\"([^\"]+)\"", t)
+        if m:
+            out["sast_filter"] = m.group(1)
         out["scan_line"] = scan.first_line
     if breaker:
         t = breaker.text()

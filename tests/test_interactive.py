@@ -30,20 +30,42 @@ class ConsolePromptsTest(unittest.TestCase):
 
     def test_gather_all(self):
         out = io.StringIO()
-        sel = gather_console(_answers("/no/existe", '"%s"' % self.main, "s", str(self.prev), "n", "s", str(self.pom)), out)
+        sel = gather_console(_answers("/no/existe", '"%s"' % self.main, "s", str(self.prev), "n", "s", str(self.pom), "n"), out)
         self.assertEqual(sel["logs"], [str(self.prev), str(self.main)])  # comparación primero, principal al final
         self.assertEqual(sel["pom"], str(self.pom))
         self.assertIn("No existe", out.getvalue())
 
     def test_gather_only_main(self):
-        sel = gather_console(_answers(str(self.main), "", ""), io.StringIO())
+        sel = gather_console(_answers(str(self.main), "", "", ""), io.StringIO())
         self.assertEqual((sel["logs"], sel["pom"]), ([str(self.main)], None))
 
     @unittest.skipIf(sys.platform.startswith("win"), "en Windows la barra invertida es separador de ruta, no escape de espacios")
     def test_dragged_path_with_escaped_spaces(self):
         spaced = make_download(self.tmp / "con espacios", "300")
-        sel = gather_console(_answers(str(spaced).replace(" ", "\\ "), "n", "n"), io.StringIO())
+        sel = gather_console(_answers(str(spaced).replace(" ", "\\ "), "n", "n", "n"), io.StringIO())
         self.assertEqual(sel["logs"], [str(spaced)])
+
+    def test_gather_extra_reports(self):
+        pdf = self.tmp / "scan.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        folder = self.tmp / "reportes"
+        folder.mkdir()
+        out = io.StringIO()
+        sel = gather_console(_answers(str(self.main), "n", "n", "s", "/no/existe", str(pdf), str(folder), ""), out)
+        self.assertEqual(sel["reports"], [str(pdf), str(folder)])
+        self.assertIn("Agregado (2)", out.getvalue())
+        self.assertEqual(gather_console(_answers(str(self.main), "n", "n", "n"), io.StringIO())["reports"], [])
+
+    def test_extra_reports_reach_the_analysis(self):
+        from test_cxone_scanreport import REPORT
+        md = self.tmp / "scan.md"
+        md.write_text(REPORT, encoding="utf-8")
+        answers = _answers(str(self.main), "n", "n", "s", str(md), "")
+        with mock.patch("builtins.input", answers), mock.patch.object(cli, "gui_status", return_value=(False, "sin pantalla", "n/a")):
+            rc = cli.main(["--no-gui", "--no-console", "--no-progress", "--formats", "html"])
+        self.assertEqual(rc, 0)
+        html = (sorted(d for d in (self.main.parent / "reporte_pipeline").iterdir() if d.is_dir())[-1] / "reporte.html").read_text(encoding="utf-8")
+        self.assertIn("scan.md", html)
 
     def test_cancel(self):
         def eof(prompt=""):
@@ -52,7 +74,7 @@ class ConsolePromptsTest(unittest.TestCase):
             gather_console(eof, io.StringIO())
 
     def test_main_without_args_uses_prompts(self):
-        answers = _answers(str(self.main), "s", str(self.prev), "n", "n")
+        answers = _answers(str(self.main), "s", str(self.prev), "n", "n", "n")
         with mock.patch("builtins.input", answers), mock.patch.object(cli, "gui_status", return_value=(False, "sin pantalla", "n/a")):
             rc = cli.main(["--no-gui", "--no-console", "--no-progress"])
         self.assertEqual(rc, 0)

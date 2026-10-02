@@ -11,6 +11,8 @@ from . import BRAND, __version__
 from .compare import IMPROVED, NA, SAME, WORSE, comparison_table, findings_diff
 from .pdf import AMBER, BAND, BLUE, GREEN, MUTED, RED, PdfDoc
 from . import tool_reports as TR
+from .cxone_pdf import reconcile
+from . import cxone_view as CV
 from .plan import build_plan, validation_commands
 from .rules import SEVERITIES, SEVERITY_RANK, Finding, finding_anchor, is_pipeline_owned, pipeline_anchor
 
@@ -39,7 +41,56 @@ class Analysis:
     runs: List[Run]
     pom_findings: List[Finding] = field(default_factory=list)
     pom_path: Optional[str] = None
+    review: Dict[str, Any] = field(default_factory=dict)         # inventario de archivos revisados (carpetas/.zip compartidos)
     tool_reports: Dict[str, Any] = field(default_factory=dict)  # PMD/Checkstyle/SpotBugs/CxOne leídos de --reports
+
+    def _cx_extra(self, mod: str) -> str:
+        """« · 9 Medium · 2 Low» del motor, para que el resumen no oculte lo que el breaker no bloquea."""
+        row = ((self.last.metrics.get("cxone") or {}).get("engines") or {}).get(mod) or {}
+        return "".join(" · %d %s" % (row[k], k.capitalize()) for k in ("medium", "low") if row.get(k))
+
+    def cxone_summary(self) -> Optional[Dict[str, Any]]:
+        """Tabla «Scan Summary» de CxOne de la última ejecución: motores en orden fijo, totales, metadatos y notas."""
+        c = self.last.metrics.get("cxone") or {}
+        eng = c.get("engines")
+        if not eng:
+            return None
+        rows = []
+        for name in _CX_ORDER:
+            r = eng.get(name)
+            if r is None and name == "TOTAL":
+                continue
+            r = r or {"ran": False, "status": "-"}
+            rows.append({"name": name, "ran": bool(r.get("ran")), "status": r.get("status") or "-",
+                         "counts": [r.get(k) if r.get("ran") else None for k in _CX_SEVS]})
+        for name, r in (c.get("supply_chain") or {}).items():
+            rows.append({"name": name, "ran": bool(r.get("ran")), "status": r.get("status") or "-",
+                         "counts": [r.get(k) if r.get("ran") else None for k in _CX_SEVS], "sub": True})
+        total = (eng.get("TOTAL") or {})
+        notes = []
+        engine_sum = sum((eng[n].get(k) or 0) for n in eng if n != "TOTAL" for k in _CX_SEVS)
+        if c.get("total_results") is not None and engine_sum != c["total_results"]:
+            notes.append("«Total Results» del log (%d) no coincide con la suma de los motores (%d)." % (c["total_results"], engine_sum))
+        nb = sum((total.get(k) or 0) for k in ("medium", "low", "info"))
+        if nb:
+            notes.append("El breaker solo evalúa Critical/High: los %d hallazgo(s) Medium/Low/Info no bloquean, pero siguen siendo deuda de seguridad." % nb)
+        if c.get("scs_warning"):
+            notes.append("SCS (Scorecard) no se ejecutó: " + c["scs_warning"])
+        elif any(r["name"] == "SCS" and r["status"] == "Partial" for r in rows):
+            notes.append("SCS con estado Partial: el análisis de supply chain quedó incompleto.")
+        flt = c.get("sast_filter") or ""
+        if "/test/" in flt:
+            notes.append("El filtro SAST excluye **/test/**: el código de pruebas no se escanea.")
+        meta = {k: c[k] for k in ("project", "scan_id", "branch", "created_at", "scan_types", "risk_level", "task_version", "cli_version") if c.get(k)}
+        return {"rows": rows, "total_results": c.get("total_results"), "meta": meta, "notes": notes}
+
+    def cxone_match(self) -> Optional[Dict[str, Any]]:
+        """Cruce del PDF de Checkmarx con el log (conteos) y con el JSON de CxOne (hallazgos), si hay PDF."""
+        pdf = self.tool_reports.get("cxone_pdf")
+        if not pdf:
+            return None
+        js = self.tool_reports.get("cxone")
+        return reconcile(pdf, self.last.metrics.get("cxone"), js["items"] if js else None)
 
     @property
     def last(self) -> Run:
@@ -72,7 +123,7 @@ class Analysis:
             if mod in mods:
                 d = mods[mod]
                 out.append({"name": "CxOne " + mod, "status": "OK" if d["status"] == "PASO" else "FALLO",
-                            "detail": "%d Critical / %d High" % (d["critical"], d["high"])})
+                            "detail": "%d Critical / %d High%s" % (d["critical"], d["high"], self._cx_extra(mod))})
         if m["tmas"].get("breaker"):
             out.append({"name": "TMAS", "status": m["tmas"]["breaker"],
                         "detail": "%s Critical / %s High" % (m["tmas"].get("critical"), m["tmas"].get("high"))})
@@ -207,6 +258,14 @@ def render_console(a: Analysis, color: bool = True, unicode: bool = True) -> str
     L.append(_table(["Verificación", "Estado", "Detalle"],
                     [[g["name"], g["status"], g["detail"]] for g in a.gates()], color, color_cols=(1,)))
 
+    cx = a.cxone_summary()
+    if cx:
+        L.append("\n RESULTADOS DE CXONE" + (" · %d en total" % cx["total_results"] if cx["total_results"] is not None else ""))
+        L.append(_table(["Motor", "Critical", "High", "Medium", "Low", "Info", "Estado"],
+                        [[("  ↳ " if r.get("sub") else "") + r["name"]] + [_cx_cell(v, r["ran"]) for v in r["counts"]] +
+                         [r["status"] if r["ran"] else "no ejecutado"] for r in cx["rows"]], color))
+        L += [" · " + n for n in cx["notes"]]
+
     if len(a.runs) > 1:
         L.append("\n COMPARATIVA")
         rows = a.comparison()
@@ -313,6 +372,9 @@ def render_markdown(a: Analysis) -> str:
     counts = _sev_counts(a.project_findings())
     L.append("")
     L.append("Hallazgos: " + " · ".join("%s: **%d**" % (_SEV_MD[s], n) for s, n in counts.items() if n))
+    L += _cxone_summary_md(a)
+    if a.tool_reports.get("cxone_pdf"):
+        L += CV.findings_md(a.tool_reports["cxone_pdf"], False)
 
     if len(a.runs) > 1:
         L.append("")
@@ -417,37 +479,41 @@ def _finding_md(f: Finding, pmap: Optional[Dict[str, Finding]] = None, anchor: b
 
 # ====================================================================== HTML
 
-_CSS = """
+_CSS = CV.CSS_VARS + CV.CSS + """
 :root{--bg:#f7f7f5;--card:#fff;--fg:#1d1d1b;--muted:#6b6b66;--border:#e3e2dc;--ok:#1f7a4d;--okbg:#e3f3ea;
 --bad:#b42318;--badbg:#fde8e6;--warn:#9a6700;--warnbg:#fff4d6;--info:#2f5fa7;--infobg:#e6eefb;--code:#f1f0ec}
 @media (prefers-color-scheme:dark){:root{--bg:#161615;--card:#1f1f1d;--fg:#ecebe6;--muted:#a3a29b;--border:#34332f;
 --ok:#5cc58f;--okbg:#17301f;--bad:#ff8a7a;--badbg:#3a1c18;--warn:#f2c14e;--warnbg:#342a10;--info:#8fb4f5;--infobg:#18243a;--code:#2a2926}}
-*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}body{overflow-wrap:anywhere;margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
-main{width:100%;max-width:none;margin:0 auto;padding:clamp(12px,2.5vw,40px) clamp(12px,3vw,48px) 60px}h1{font-size:26px;margin:0 0 4px}h2{font-size:19px;margin:34px 0 12px}
-.sub{color:var(--muted);margin:0 0 20px}.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 18px}
-.verdict{font-weight:600;margin-bottom:14px}.gates{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,180px),1fr));gap:10px}
-.gate{border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--card)}.gate b{display:block;font-size:13px;color:var(--muted);font-weight:500}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}body{overflow-wrap:anywhere;margin:0;background:var(--bg);color:var(--fg);font:15px/1.7 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{width:100%;max-width:none;margin:0 auto;padding:clamp(12px,2.5vw,40px) clamp(12px,3vw,48px) 60px}h1{font-size:26px;margin:0 0 4px}h2{font-size:20px;margin:56px 0 18px}
+.sub{color:var(--muted);margin:0 0 24px}.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:22px 26px;margin:0 0 8px}
+.verdict{font-weight:600;margin-bottom:20px;font-size:16px}.gates{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,180px),1fr));gap:16px}
+.gate{border:1px solid var(--border);border-radius:10px;padding:14px 16px;background:var(--card)}.gate b{display:block;font-size:13px;color:var(--muted);font-weight:500}
 .gate .st{font-weight:700;font-size:15px}.gate .d{font-size:13px;color:var(--muted)}
 .ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}
-.tbl{width:100%;overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:14px;table-layout:auto}td code{white-space:normal}th,td{padding:7px 10px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}td{overflow-wrap:anywhere;word-break:break-word}td:last-child{min-width:120px}
+.tbl{width:100%;overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:14px;table-layout:auto}td code{white-space:normal}th,td{padding:10px 14px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}td{overflow-wrap:anywhere;word-break:break-word}td:last-child{min-width:120px}
 th{font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--muted);font-weight:600}td.num{font-variant-numeric:tabular-nums}
 .pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;font-weight:600;white-space:nowrap}
 .p-ok{background:var(--okbg);color:var(--ok)}.p-bad{background:var(--badbg);color:var(--bad)}.p-warn{background:var(--warnbg);color:var(--warn)}.p-info{background:var(--infobg);color:var(--info)}.p-na{color:var(--muted)}
 .sev-CRITICAL,.sev-HIGH{background:var(--badbg);color:var(--bad)}.sev-MEDIUM{background:var(--warnbg);color:var(--warn)}.sev-LOW,.sev-INFO{background:var(--infobg);color:var(--info)}
-details{background:var(--card);border:1px solid var(--border);border-radius:8px;margin:8px 0}summary{cursor:pointer;padding:10px 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-summary .t{font-weight:600;flex:1;min-width:min(100%,220px)}summary .c{color:var(--muted);font-size:13px}.fb{padding:0 16px 14px}
+details{background:var(--card);border:1px solid var(--border);border-radius:10px;margin:14px 0}summary{cursor:pointer;padding:14px 18px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+summary .t{font-weight:600;flex:1;min-width:min(100%,220px)}summary .c{color:var(--muted);font-size:13px}.fb{padding:4px 22px 22px}.fb p{margin:12px 0}.fb b{display:block;margin:18px 0 6px}.fb ul,.fb ol{margin:8px 0 12px}.fb li{margin:6px 0}
 .fb ol{padding-left:20px;margin:6px 0}code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
 pre{background:var(--code);padding:10px 12px;border-radius:6px;overflow-x:auto;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;max-width:100%}.ev li{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;overflow-wrap:anywhere;white-space:pre-wrap}
-.counts{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.diffcols{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:12px}.diffcols>*,.gates>*{min-width:0}
-.diffcols ul{padding-left:18px;margin:6px 0}.dep{background:var(--infobg);border-radius:8px;padding:8px 12px;margin:12px 0 0}.chip{display:inline-block;background:var(--infobg);color:var(--info);border:1px solid var(--info);border-radius:8px;padding:1px 9px;font-size:12px;font-weight:600;text-decoration:none;margin:2px 4px 2px 0;line-height:1.35}.chip:hover{text-decoration:underline}
-details:target{outline:2px solid var(--info)}details,h2{scroll-margin-top:12px}h3{font-size:16px;margin:22px 0 6px}a{color:var(--info)}
-.nav{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 18px}.nav a{background:var(--card);border:1px solid var(--border);border-radius:99px;padding:3px 12px;text-decoration:none;font-size:13px;color:var(--fg)}.nav a:hover{border-color:var(--info);color:var(--info)}
-.step{display:flex;gap:14px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin:10px 0}.step .sn{flex:none;width:32px;height:32px;border-radius:50%;background:var(--info);color:#fff;display:grid;place-items:center;font-weight:700}
-.step .sb{flex:1;min-width:0}.step h3{margin:0 0 4px;font-size:17px}.acts{padding-left:20px}.acts>li{margin:10px 0}.acts ul{margin:4px 0 0;padding-left:18px;color:var(--muted);font-size:14px}
-.done{background:var(--okbg);color:var(--ok);border-radius:8px;padding:6px 10px;margin:10px 0 0}.hint{background:var(--infobg);border-radius:8px;padding:6px 10px;font-size:14px}
-.tooldet{background:var(--bg);margin:8px 0}.tooldet .tbl{padding:0 12px 10px}.tooldet details{margin:6px 12px}
+.counts{display:flex;gap:10px;flex-wrap:wrap;margin-top:20px}.diffcols{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:12px}.diffcols>*,.gates>*{min-width:0}
+.diffcols ul{padding-left:18px;margin:6px 0}.dep{background:var(--infobg);border-radius:10px;padding:12px 16px;margin:20px 0 0}.chip{display:inline-block;background:var(--infobg);color:var(--info);border:1px solid var(--info);border-radius:8px;padding:1px 9px;font-size:12px;font-weight:600;text-decoration:none;margin:2px 4px 2px 0;line-height:1.35}.chip:hover{text-decoration:underline}
+details:target{outline:2px solid var(--info)}details,h2{scroll-margin-top:12px}h3{font-size:16px;margin:32px 0 12px}a{color:var(--info)}
+.nav{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 28px}.nav a{background:var(--card);border:1px solid var(--border);border-radius:99px;padding:3px 12px;text-decoration:none;font-size:13px;color:var(--fg)}.nav a:hover{border-color:var(--info);color:var(--info)}
+.step{display:flex;gap:18px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:22px 26px;margin:20px 0}.step .sn{flex:none;width:32px;height:32px;border-radius:50%;background:var(--info);color:#fff;display:grid;place-items:center;font-weight:700}
+.step .sb{flex:1;min-width:0}.step h3{margin:0 0 10px;font-size:17px}.acts{padding-left:22px;margin:14px 0}.acts>li{margin:18px 0}.acts ul{margin:8px 0 0;padding-left:18px;color:var(--muted);font-size:14px}
+.done{background:var(--okbg);color:var(--ok);border-radius:10px;padding:10px 14px;margin:20px 0 0}.hint{background:var(--infobg);border-radius:10px;padding:10px 14px;margin:14px 0;font-size:14px}
+.tooldet{background:var(--bg);margin:16px 0}.tooldet .tbl{padding:0 12px 10px}.tooldet details{margin:6px 12px}
 .warnbox{background:var(--warnbg);color:var(--warn);border:1px solid var(--warn);border-radius:8px;padding:10px 14px;margin:0 0 18px;font-weight:600}
-footer{color:var(--muted);font-size:13px;margin-top:40px}
+.sec{background:none;border:0;border-top:1px solid var(--border);border-radius:0;margin:0}.sec>summary{padding:22px 4px;list-style:none;gap:14px}
+.sec>summary::-webkit-details-marker{display:none}.sec>summary::before{content:'▸';color:var(--muted);font-size:15px;width:14px;transition:transform .15s}
+.sec[open]>summary::before{transform:rotate(90deg)}.sec>summary:hover h2{color:var(--info)}.sec>summary h2{margin:0;flex:none;font-size:18px}
+.sec .sc{color:var(--muted);font-size:13px;margin-left:auto}.secb{padding:0 4px 32px}.secb>details:first-child{margin-top:0}
+footer{color:var(--muted);font-size:13px;margin-top:56px}
 .brand{position:fixed;right:14px;bottom:8px;font-size:12px;font-weight:600;letter-spacing:.06em;color:var(--muted);opacity:.55;pointer-events:none}
 @media print{.brand{position:static;text-align:right}}
 """
@@ -474,8 +540,9 @@ def render_html(a: Analysis, full: bool = False) -> str:
         H.append("<div class='warnbox'>⚠ PRECAUCIÓN - INFORMACIÓN CONFIDENCIAL. Este documento contiene valores reales (secretos, credenciales, hosts y correos) y evidencia sin enmascarar. Trátalo como material sensible: no lo compartas, reenvíes ni adjuntes a tickets o chats; si se expone por error, rota las credenciales que aparezcan en él.</div>")
     H.append("<p class='sub'>%d ejecución(es) · generado %s · pipeline-analyzer %s</p>"
              % (len(a.runs), datetime.now().strftime("%Y-%m-%d %H:%M"), __version__))
-    H.append("<nav class='nav'><a href='#ruta'>Ruta para pasar</a><a href='#hallazgos'>Hallazgos del proyecto</a>%s%s</nav>"
-             % ("<a href='#pipeline-recs'>Recomendaciones del pipeline</a>" if a.pipeline_findings() else "",
+    H.append("<nav class='nav'><a href='#ruta'>Ruta para pasar</a>%s<a href='#plan'>Plan de acción</a><a href='#hallazgos'>Hallazgos del proyecto</a>%s%s</nav>"
+             % ("<a href='#cxone'>Resultados de CxOne</a>" if a.cxone_summary() else "",
+                "<a href='#pipeline-recs'>Recomendaciones del pipeline</a>" if a.pipeline_findings() else "",
                 "<a href='#validaciones'>Validaciones</a>" if a.checklist() else ""))
 
     # Resumen
@@ -500,82 +567,150 @@ def render_html(a: Analysis, full: bool = False) -> str:
         H.append("<p class='sub'><a href='#pipeline-recs'>Ver las %d recomendaciones para quien administra el pipeline ↓</a></p>" % len(pmap))
     H.append("</div>")
 
-    # Ejecuciones
-    H.append("<h2>Ejecuciones analizadas</h2><div class='card tbl'><table><tr><th>Etiqueta</th><th>Proveedor</th><th>Inicio</th>"
-             "<th>Duración</th><th>PR</th><th>Archivos</th><th>Origen</th></tr>")
+    # ---- Lo principal, siempre visible: qué bloquea y qué puede resolver el equipo de desarrollo
+    H.append(_plan_html(a, full, pmap))
+    H.append(_cxone_summary_html(a))
+
+    # ---- El resto, plegado: solo el título hasta que el usuario lo expande
+    plan = a.action_plan()
+    body = ["<div class='card tbl'><table><tr><th>#</th><th>Severidad</th><th>Hallazgo</th><th>Categoría</th></tr>"]
+    for i, f in enumerate(plan, 1):
+        tag = " " + _chip(f) if is_pipeline_owned(f) else ""
+        body.append("<tr><td class='num'>%d</td><td><span class='pill sev-%s'>%s</span></td><td>%s%s</td><td>%s</td></tr>"
+                    % (i, f.severity, f.severity, _e(f.title), tag, _e(f.category)))
+    body.append("</table></div>")
+    H.append(_sec("Plan de acción: qué corregir para pasar", "".join(body), "plan", "%d acción(es)" % len(plan)))
+
+    mine = [f for f in a.last.findings if not is_pipeline_owned(f)]
+    body = [_finding_html(f, full, pmap) for f in mine]
+    if a.pom_findings:
+        body.append("<h3>Hallazgos del pom.xml</h3><p class='sub'><code>%s</code></p>" % _e(a.pom_path if full else short_path(a.pom_path)))
+        body += [_finding_html(f, full, pmap) for f in a.pom_findings]
+    H.append(_sec("Hallazgos del proyecto — %s" % a.last.label, "".join(body) or "<p class='sub'>Sin hallazgos.</p>", "hallazgos",
+                  "%d hallazgo(s)%s" % (len(mine), " + %d del pom" % len(a.pom_findings) if a.pom_findings else "")))
+
+    if len(a.runs) > 1:
+        body = ["<div class='card tbl'><table><tr><th>Métrica</th>"]
+        body += ["<th>%s</th>" % _e(r.label) for r in a.runs]
+        body.append("<th>vs anterior</th><th>vs primera</th></tr>")
+        for row in a.comparison():
+            body.append("<tr><td>%s</td>" % _e(row["label"]))
+            body += ["<td class='num'>%s</td>" % _e(_fmt(v)) for v in row["values"]]
+            for k in ("trend_prev", "trend_first"):
+                cls, txt = _TREND_HTML[row[k]]
+                body.append("<td><span class='pill %s'>%s</span></td>" % (cls, txt))
+            body.append("</tr>")
+        body.append("</table></div>")
+        d = a.diff()
+        if d:
+            body.append("<h3>Cambios en hallazgos (%s → %s)</h3><div class='diffcols'>" % (_e(a.runs[-2].label), _e(a.runs[-1].label)))
+            for name, lab, cls in (("resolved", "Resueltos", "ok"), ("unverified", "No verificables", "warn"),
+                                   ("new", "Nuevos", "bad"), ("persistent", "Persisten", "warn")):
+                body.append("<div class='card'><b class='%s'>%s (%d)</b><ul>" % (cls, lab, len(d[name])))
+                body += ["<li><span class='pill sev-%s'>%s</span> %s</li>" % (f.severity, f.severity, _e(f.title)) for f in d[name]]
+                if not d[name]:
+                    body.append("<li class='p-na'>ninguno</li>")
+                body.append("</ul></div>")
+            body.append("</div>")
+        H.append(_sec("Comparativa entre ejecuciones", "".join(body), "comparativa", "%d ejecuciones" % len(a.runs)))
+
+    body = ["<div class='card tbl'><table><tr><th>Etiqueta</th><th>Proveedor</th><th>Inicio</th>"
+            "<th>Duración</th><th>PR</th><th>Archivos</th><th>Origen</th></tr>"]
     for r in a.runs:
         mt = r.metrics["meta"]
         att = " · intento %s/%s" % (mt["attempt"], mt["attempts"]) if mt.get("attempts", 1) > 1 else ""
-        H.append("<tr><td>%s</td><td>%s</td><td>%s</td><td class='num'>%s min</td><td>%s</td><td class='num'>%s%s</td><td><code>%s</code></td></tr>"
-                 % (_e(r.label), _e(mt.get("provider_label", "-")), _e(mt.get("start") or "-"),
-                    round((mt.get("duration_s") or 0) / 60, 1), _e(mt.get("pull_request") or "-"),
-                    mt.get("sources", 1), _e(att), _e(mt["file"] if full else short_origin(mt["file"]))))
-    H.append("</table></div>")
+        body.append("<tr><td>%s</td><td>%s</td><td>%s</td><td class='num'>%s min</td><td>%s</td><td class='num'>%s%s</td><td><code>%s</code></td></tr>"
+                    % (_e(r.label), _e(mt.get("provider_label", "-")), _e(mt.get("start") or "-"),
+                       round((mt.get("duration_s") or 0) / 60, 1), _e(mt.get("pull_request") or "-"),
+                       mt.get("sources", 1), _e(att), _e(mt["file"] if full else short_origin(mt["file"]))))
+    body.append("</table></div>")
+    H.append(_sec("Ejecuciones analizadas", "".join(body), "ejecuciones", "%d · %s" % (len(a.runs), a.last.metrics["meta"].get("provider_label", ""))))
+    H.append(_review_html(a))
 
-    # Comparativa
-    if len(a.runs) > 1:
-        H.append("<h2>Comparativa entre ejecuciones</h2><div class='card tbl'><table><tr><th>Métrica</th>")
-        H += ["<th>%s</th>" % _e(r.label) for r in a.runs]
-        H.append("<th>vs anterior</th><th>vs primera</th></tr>")
-        for row in a.comparison():
-            H.append("<tr><td>%s</td>" % _e(row["label"]))
-            H += ["<td class='num'>%s</td>" % _e(_fmt(v)) for v in row["values"]]
-            for k in ("trend_prev", "trend_first"):
-                cls, txt = _TREND_HTML[row[k]]
-                H.append("<td><span class='pill %s'>%s</span></td>" % (cls, txt))
-            H.append("</tr>")
-        H.append("</table></div>")
-        d = a.diff()
-        if d:
-            H.append("<h2>Cambios en hallazgos (%s → %s)</h2><div class='diffcols'>" % (_e(a.runs[-2].label), _e(a.runs[-1].label)))
-            for name, lab, cls in (("resolved", "Resueltos", "ok"), ("unverified", "No verificables", "warn"),
-                                   ("new", "Nuevos", "bad"), ("persistent", "Persisten", "warn")):
-                H.append("<div class='card'><b class='%s'>%s (%d)</b><ul>" % (cls, lab, len(d[name])))
-                H += ["<li><span class='pill sev-%s'>%s</span> %s</li>" % (f.severity, f.severity, _e(f.title)) for f in d[name]]
-                if not d[name]:
-                    H.append("<li class='p-na'>ninguno</li>")
-                H.append("</ul></div>")
-            H.append("</div>")
-
-    H.append(_plan_html(a, full, pmap))
-
-    # Plan de acción: qué corregir para pasar
-    H.append("<h2>Plan de acción: qué corregir para pasar</h2><div class='card tbl'><table><tr><th>#</th><th>Severidad</th><th>Hallazgo</th><th>Categoría</th></tr>")
-    for i, f in enumerate(a.action_plan(), 1):
-        tag = " " + _chip(f) if is_pipeline_owned(f) else ""
-        H.append("<tr><td class='num'>%d</td><td><span class='pill sev-%s'>%s</span></td><td>%s%s</td><td>%s</td></tr>"
-                 % (i, f.severity, f.severity, _e(f.title), tag, _e(f.category)))
-    H.append("</table></div>")
-
-    H.append("<h2 id='hallazgos'>Hallazgos del proyecto — %s</h2>" % _e(a.last.label))
-    H += [_finding_html(f, full, pmap) for f in a.last.findings if not is_pipeline_owned(f)]
-    if a.pom_findings:
-        H.append("<h2>Hallazgos del pom.xml</h2><p class='sub'><code>%s</code></p>" % _e(a.pom_path if full else short_path(a.pom_path)))
-        H += [_finding_html(f, full, pmap) for f in a.pom_findings]
-
-    # Recomendaciones para quien administra el pipeline (al final)
+    # Recomendaciones para quien administra el pipeline: configuración del SCM, normalmente fuera del alcance del equipo de desarrollo
     affecting, others = a.pipeline_groups()
     if affecting or others:
-        H.append("<h2 id='pipeline-recs'>Recomendaciones para quien administra el pipeline</h2>"
-                 "<p class='sub'>No dependen del código del proyecto. Las del primer grupo sí afectan a que tu proyecto pase; "
-                 "las demás son mejoras de seguridad y mantenimiento.</p>")
+        body = ["<p class='sub'>Configuración del pipeline y de la plataforma: por lo general solo el equipo SCM/plataforma tiene acceso. "
+                "No dependen del código del proyecto; las del primer grupo sí afectan a que tu proyecto pase.</p>"]
         for title, group in (("Afectan a que tu proyecto pase", affecting), ("Otras mejoras de seguridad y mantenimiento", others)):
             if group:
-                H.append("<h3>%s (%d)</h3>" % (title, len(group)))
-                H += [_finding_html(f, full, pmap, anchor=True) for f in group]
+                body.append("<h3>%s (%d)</h3>" % (title, len(group)))
+                body += [_finding_html(f, full, pmap, anchor=True) for f in group]
+        H.append(_sec("Recomendaciones para quien administra el pipeline", "".join(body), "pipeline-recs",
+                      "%d en total%s" % (len(affecting) + len(others), " · %d afectan a que pase" % len(affecting) if affecting else "")))
     if a.checklist():
-        H.append("<h2 id='validaciones'>Validaciones de seguridad (referencia) — %s</h2><div class='card tbl'><table><tr><th>Área</th><th>Validación</th>"
-                 "<th>Estado</th><th>Detalle</th></tr>" % _e(a.last.label))
+        body = ["<div class='card tbl'><table><tr><th>Área</th><th>Validación</th><th>Estado</th><th>Detalle</th></tr>"]
         for c in a.checklist():
             cls = {"OK": "p-ok", "ALERTA": "p-bad", "INFO": "p-info"}.get(c["status"], "p-na")
-            H.append("<tr><td>%s</td><td>%s</td><td><span class='pill %s'>%s</span></td><td>%s</td></tr>"
-                     % (_e(c["area"]), _e(c["check"]), cls, _e(c["status"]), _e(c["detail"])))
-        H.append("</table></div>")
+            body.append("<tr><td>%s</td><td>%s</td><td><span class='pill %s'>%s</span></td><td>%s</td></tr>"
+                        % (_e(c["area"]), _e(c["check"]), cls, _e(c["status"]), _e(c["detail"])))
+        body.append("</table></div>")
+        alerts = sum(1 for c in a.checklist() if c["status"] == "ALERTA")
+        H.append(_sec("Validaciones de seguridad (referencia) — %s" % a.last.label, "".join(body), "validaciones",
+                      "%d de %d en alerta" % (alerts, len(a.checklist()))))
 
     H.append("<footer>Las causas probables son heurísticas basadas en el log: confírmalas en SonarQube, "
              "CxOne y los reportes de cada herramienta.<br>%s · pipeline-analyzer %s</footer></main>"
              "<div class='brand' aria-hidden='true'>%s</div><script>%s</script></body></html>" % (BRAND, __version__, BRAND, _JS))
     return "".join(H)
+
+
+_CX_ORDER = ("APIs", "IAC", "SAST", "SCA", "SCS", "CONTAINERS", "TOTAL")
+_CX_SEVS = ("critical", "high", "medium", "low", "info")
+_CX_META_LABEL = {"project": "Proyecto", "scan_id": "Scan ID", "branch": "Rama", "created_at": "Creado", "scan_types": "Tipos de escaneo",
+                  "risk_level": "Nivel de riesgo", "task_version": "Tarea AST", "cli_version": "AST-CLI"}
+
+
+def _sec(title: str, body: str, anchor: str, hint: str = "", open_: bool = False) -> str:
+    """Sección plegable: solo el título (y un dato breve) hasta que el usuario la expande."""
+    return ("<details class='sec' id='%s'%s><summary><h2>%s</h2><span class='sc'>%s</span></summary><div class='secb'>%s</div></details>"
+            % (anchor, " open" if open_ else "", _e(title), _e(hint), body))
+
+
+def _cx_cell(v: Any, ran: bool) -> str:
+    return "-" if v is None or not ran else str(v)
+
+
+def _cxone_summary_html(a: Analysis) -> str:
+    s = a.cxone_summary()
+    if not s:
+        return ""
+    H = ["<h2 id='cxone'>Resultados de CxOne</h2><div class='card'>", CV.summary_html(s)]
+    H += ["<p class='hint'>💡 %s</p>" % _e(n) for n in s["notes"]]
+    H.append("</div>")
+    return "".join(H)
+
+
+def _review_html(a: Analysis) -> str:
+    rv = a.review
+    if not rv or not rv["files"]:
+        return ""
+    c = rv["counts"]
+    H = ["<div class='card'><p>%d archivo(s): %d log(s), %d definición(es) de pipeline, %d reporte(s) de herramientas leídos, %d ignorado(s).</p>"
+         % (c["total"], c["logs"], c["definiciones"], c["reportes"], c["ignorados"])]
+    cap = 400
+    H.append("<details><summary>Ver el detalle de cada archivo%s</summary><div class='tbl'><table><tr><th>Archivo</th><th>Tratamiento</th></tr>"
+             % (" (primeros %d)" % cap if len(rv["files"]) > cap else ""))
+    for f in rv["files"][:cap]:
+        bad = f["status"].startswith(("ignorado", "no ", "sin ", "omitido", "reporte de herramienta"))
+        H.append("<tr><td><code>%s</code></td><td class='%s'>%s</td></tr>" % (_e(f["file"]), "p-na" if bad else "", _e(f["status"])))
+    H.append("</table></div></details></div>")
+    return _sec("Archivos revisados", "".join(H), "archivos", "%d archivo(s)" % c["total"])
+
+
+def _cxone_summary_md(a: Analysis) -> List[str]:
+    s = a.cxone_summary()
+    if not s:
+        return []
+    L = ["", "## Resultados de CxOne" + (" · %d en total" % s["total_results"] if s["total_results"] is not None else ""), ""]
+    if s["meta"]:
+        L += ["_%s_" % " · ".join("%s: %s" % (_CX_META_LABEL[k], v) for k, v in s["meta"].items()), ""]
+    L += ["| Motor | Critical | High | Medium | Low | Info | Estado |", "|---|---|---|---|---|---|---|"]
+    for r in s["rows"]:
+        L.append("| %s | %s | %s |" % (("↳ " if r.get("sub") else "") + r["name"], " | ".join(_cx_cell(v, r["ran"]) for v in r["counts"]),
+                                       r["status"] if r["ran"] else "no ejecutado"))
+    L += [""] + ["- %s" % _md_escape(n) for n in s["notes"]]
+    return L
 
 
 _STATIC_TOOLS = ("pmd", "checkstyle", "spotbugs")
@@ -610,6 +745,50 @@ def _tools_html(a: Analysis, tools, full: bool) -> str:
                      % (_e(TR.short_file(it["file"], full)), ":%d" % it["line"] if it["line"] else "", _e(it["rule"]), it["severity"],
                         it["severity"], _e(it["message"][:240]), _e(extra)))
         H.append("</table></div></details></details>")
+    return "".join(H)
+
+
+_MATCH_TXT = {"coincide": ("coincide", "p-ok"), "coincide_con_resueltos": ("coincide si se cuentan los Not Exploitable", "p-info"),
+              "difiere": ("difiere", "p-bad"), "solo_pdf": ("solo en el PDF", "p-bad")}
+
+
+def _cxone_match_html(a: Analysis, full: bool) -> str:
+    m = a.cxone_match()
+    if not m:
+        return ""
+    verdict = {"ok": ("Coinciden con el log", "p-ok"), "differences": ("Hay diferencias", "p-bad"), "nolog": ("Sin conteos en el log", "p-info")}[m["verdict"]]
+    H = ["<details class='tooldet' open><summary><b>PDF de Checkmarx ↔ resultados del pipeline</b> <span class='pill %s'>%s</span></summary>" % (verdict[1], verdict[0])]
+    meta = m["meta"]
+    if meta:
+        H.append("<p class='sub'>%s</p>" % _e(" · ".join("%s: %s" % (k.replace("_", " "), v) for k, v in meta.items())))
+    if m["counts"]:
+        H.append("<div class='tbl'><table><tr><th>Motor</th><th>Severidad</th><th>Log</th><th>PDF</th><th>Resultado</th></tr>")
+        for r in m["counts"]:
+            txt, cls = _MATCH_TXT[r["state"]]
+            H.append("<tr><td>%s</td><td><span class='pill sev-%s'>%s</span></td><td class='num'>%s</td><td class='num'>%d%s</td>"
+                     "<td><span class='pill %s'>%s</span></td></tr>"
+                     % (_e(r["engine"]), r["severity"], r["severity"], "-" if r["log"] is None else r["log"], r["pdf"],
+                        " <span class='c'>(%d con Not Exploitable)</span>" % r["pdf_all"] if r["pdf_all"] != r["pdf"] else "", cls, txt))
+        H.append("</table></div>")
+    if m.get("identity"):
+        H.append("<div class='tbl'><table><tr><th>¿Mismo escaneo?</th><th>Log</th><th>PDF</th><th></th></tr>")
+        for r in m["identity"]:
+            cls, txt = {"igual": ("p-ok", "coincide"), "distinto": ("p-bad", "distinto"), "n/c": ("p-na", "no comparable")}[r["state"]]
+            H.append("<tr><td>%s</td><td><code>%s</code></td><td><code>%s</code></td><td><span class='pill %s'>%s</span></td></tr>"
+                     % (_e(r["field"]), _e(r["log"]), _e(r["pdf"]), cls, txt))
+        H.append("</table></div>")
+    it = m["items"]
+    if it is not None:
+        H.append("<p><b>Contra el JSON de CxOne:</b> %d hallazgo(s) coinciden, %d solo en el PDF, %d solo en el JSON.</p>"
+                 % (it["coinciden"], len(it["solo_pdf"]), len(it["solo_json"])))
+        for title, rows in (("Solo en el PDF", it["solo_pdf"]), ("Solo en el JSON", it["solo_json"])):
+            if rows:
+                H.append("<details><summary>%s (%d)</summary><ul class='ev'>%s</ul></details>" % (title, len(rows), "".join(
+                    "<li><code>%s</code> · %s%s</li>" % (_e(r["rule"]), _e(TR.short_file(r["file"], full)), ":%d" % r["line"] if r["line"] else "")
+                    for r in rows[:100])))
+    for n in m["notes"]:
+        H.append("<p class='hint'>💡 %s</p>" % _e(n))
+    H.append("</details>")
     return "".join(H)
 
 
@@ -648,9 +827,15 @@ def _plan_html(a: Analysis, full: bool, pmap: Dict[str, Finding]) -> str:
                          "para ver aquí la regla, el archivo y la línea de cada violación.</p>")
         if s["key"] == "security":
             H.append(_tools_html(a, ("cxone",), full))
-            if "cxone" not in a.tool_reports and any(f.id.startswith("CXONE_") for f in s["findings"]):
+            H.append(_cxone_match_html(a, full))
+            pdf = a.tool_reports.get("cxone_pdf")
+            if pdf:
+                H.append(CV.findings_html(pdf, full))
+                if pdf.get("format") != "scan_report":
+                    H.append(_tools_html(a, ("cxone_pdf",), full))
+            if "cxone" not in a.tool_reports and "cxone_pdf" not in a.tool_reports and any(f.id.startswith("CXONE_") for f in s["findings"]):
                 H.append("<p class='hint'>💡 Con el JSON de resultados de CxOne (<code>--reports ruta/al/json</code>) verás el query, el archivo "
-                         "y la línea exactos de cada hallazgo.</p>")
+                         "y la línea exactos de cada hallazgo. También sirve el PDF que descargas de Checkmarx.</p>")
         H.append("<p class='done'>✔ <b>Listo cuando:</b> %s</p></div></section>" % _e(s["done"]))
     cmds = validation_commands(a.last.metrics["tests"].get("framework", ""), steps)
     if cmds:
@@ -664,8 +849,10 @@ def _chip(f: Finding) -> str:
     return "<a class='chip' href='#%s' title='Ir a la recomendación'>⚙ pipeline: %s</a>" % (pipeline_anchor(f), _e(f.title))
 
 
-_JS = ("function o(){var h=location.hash.slice(1),e=h&&document.getElementById(h);if(e&&e.tagName=='DETAILS')e.open=true}"
-       "addEventListener('hashchange',o);o()")
+_JS = ("function o(){var h=location.hash.slice(1),t=h&&document.getElementById(h),e=t;"
+       "while(e){if(e.tagName=='DETAILS')e.open=true;e=e.parentElement}if(t&&t.scrollIntoView)t.scrollIntoView()}"
+       "addEventListener('hashchange',o);o();"
+       "addEventListener('beforeprint',function(){document.querySelectorAll('details.sec').forEach(function(d){d.open=true})})")
 
 
 def _finding_html(f: Finding, full: bool = False, pmap: Optional[Dict[str, Finding]] = None, anchor: bool = False) -> str:
@@ -757,6 +944,23 @@ def _build_pdf(a: Analysis, full: bool, scrub: Optional[Callable[[str], str]], t
         rows.append([r.label, mt.get("provider_label", "-"), mt.get("start") or "-", "%s min" % round((mt.get("duration_s") or 0) / 60, 1),
                      mt.get("pull_request") or "-", "%s%s" % (mt.get("sources", 1), att), short_origin(mt["file"])])
     d.table(["Etiqueta", "Proveedor", "Inicio", "Duración", "PR", "Archivos", "Origen"], rows)
+
+    cx = a.cxone_summary()
+    if cx:
+        d.heading("Resultados de CxOne" + (" - %d en total" % cx["total_results"] if cx["total_results"] is not None else ""), 1, "sec-cxone")
+        if cx["meta"]:
+            d.para(" · ".join("%s: %s" % (_CX_META_LABEL[k], v) for k, v in cx["meta"].items()), MUTED, size=8.5)
+        d.table(["Motor", "Critical", "High", "Medium", "Low", "Info", "Estado"],
+                [[("-> " if r.get("sub") else "") + r["name"]] + [_cx_cell(v, r["ran"]) for v in r["counts"]] + [r["status"] if r["ran"] else "no ejecutado"]
+                 for r in cx["rows"]])
+        for n in cx["notes"]:
+            d.bullet(n)
+    pdf = a.tool_reports.get("cxone_pdf")
+    if pdf:
+        rows = CV.findings_table(pdf)
+        if rows:
+            d.heading("Hallazgos de Checkmarx y su solucion", 2)
+            d.table(["Severidad", "Consulta / CVE", "Result.", "Solucion propuesta"], rows, lambda i, t: _SEV_COLOR.get(t) if i == 0 else None)
 
     if len(a.runs) > 1:
         d.heading("Comparativa entre ejecuciones", 1, "sec-comparativa")
