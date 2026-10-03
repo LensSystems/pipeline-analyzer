@@ -1,5 +1,7 @@
 """Pruebas de la lectura de PDF de Checkmarx y su cruce con el log y el JSON de CxOne."""
 
+import contextlib
+import io
 import tempfile
 import unittest
 import zlib
@@ -174,7 +176,11 @@ class IntegrationTests(unittest.TestCase):
         self.assertIn("PDF de Checkmarx", html)
 
     def test_dump_pdf(self):
-        self.assertEqual(main(["--dump-pdf", str(write_pdf(make_pdf()))]), 0)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = main(["--dump-pdf", str(write_pdf(make_pdf()))])
+        self.assertEqual(rc, 0)
+        self.assertIn("hallazgos interpretados: 3", out.getvalue())
 
 
 if __name__ == "__main__":

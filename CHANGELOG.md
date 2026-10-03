@@ -5,6 +5,15 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ## [Sin publicar]
 
+### Añadido
+- **Validación de archivos repetidos** (ventanas y consola): el mismo archivo (misma ruta) no se puede usar en dos apartados (log principal, comparación, pom.xml, reportes) ni repetirse; sale «Archivo no válido». El mismo nombre en otra carpeta sí se acepta.
+
+### Corregido
+- **Windows: la ventana se cerraba al agregar un archivo.** El botón «Quitar» usaba el cursor `pointinghand`, que solo existe en macOS; Tk en Windows lanzaba un error y la aplicación terminaba sin avisar. Ahora usa `hand2` fuera de macOS, y cualquier fallo inesperado de las ventanas pasa a la consola (o muestra un aviso) en vez de cerrarse en silencio.
+
+### Cambiado (lanzadores)
+- **Un solo archivo de arranque en Windows:** `analizar_pipeline.bat` reemplaza a `analizar_pipeline.pyw`. Elige el mejor Python (con ventanas primero) y `analizar_pipeline.py` elige el modo de mejor a peor: ventanas sin consola (pythonw), ventanas con consola, preguntas en la consola y, si no hay nada, un aviso con el motivo.
+
 ### Cambiado
 - **Ventana en Windows y Linux:** misma pantalla única «Nuevo análisis» que en macOS (reemplaza al asistente de 4 pasos), con el mismo tamaño, el botón «Quitar» naranja, el botón «Cancelar» con confirmación durante el análisis, el doble clic en el resultado y el espaciado nuevo. Se conserva el orden de botones propio de cada sistema (en Windows, el principal a la izquierda); los atajos ⌘ siguen siendo solo de macOS.
 - **Asistente:** la tecla Esc ya no cierra ni cancela nada (antes cerraba la aplicación). En macOS se conserva ⌘. y el botón «Cancelar» durante el análisis.

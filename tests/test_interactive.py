@@ -106,6 +106,23 @@ class WindowTest(unittest.TestCase):
         self.assertEqual(sel, {"logs": ["/logs/anterior", "/logs/actual"], "main": "/logs/actual", "pom": "/p/pom.xml",
                                "reports": ["/r/b.xml"]})
 
+    def test_same_file_cannot_be_used_in_two_sections_but_same_name_elsewhere_can(self):
+        g = self.g
+        warnings = []
+        g._warn = lambda title, detail: warnings.append(detail)
+        picks = iter(["/logs/a.txt", "/logs/a.txt", "/otra/a.txt"])   # principal, comparación repetida, comparación en otra ruta
+        actions = iter(["main:file", "cmp:file", "cmp:file", "pom", "rep:files", "go"])
+        g._choice = lambda opts, cancel=None, disabled=(): next(actions)
+        g._open = lambda kind, title, ft=None: next(picks)
+        g.ask_pom = lambda: "/logs/a.txt"                                # el pom es el mismo archivo que el log principal
+        g._open_many = lambda title: ["/otra/a.txt", "/r/x.pdf"]          # el primero ya está como comparación
+        sel = g.gather()
+        self.assertEqual(sel["logs"], ["/otra/a.txt", "/logs/a.txt"])
+        self.assertIsNone(sel["pom"])
+        self.assertEqual(sel["reports"], ["/r/x.pdf"])
+        self.assertEqual(len(warnings), 3)
+        self.assertIn("ya está en", warnings[0])
+
     def test_escape_does_not_close_or_cancel_anything(self):
         g = self.g
         g._clear("Nuevo análisis")
@@ -292,6 +309,12 @@ class ConsolePromptsTest(unittest.TestCase):
         self.assertEqual(sel["logs"], [str(self.prev), str(self.main)])  # comparación primero, principal al final
         self.assertEqual(sel["pom"], str(self.pom))
         self.assertIn("No existe", out.getvalue())
+
+    def test_console_rejects_same_file_in_another_section(self):
+        out = io.StringIO()
+        sel = gather_console(_answers(str(self.main), "s", str(self.main), str(self.prev), "n", "s", str(self.pom), "n"), out)
+        self.assertEqual(sel["logs"], [str(self.prev), str(self.main)])
+        self.assertIn("Archivo no válido", out.getvalue())
 
     def test_gather_only_main(self):
         sel = gather_console(_answers(str(self.main), "", "", ""), io.StringIO())
