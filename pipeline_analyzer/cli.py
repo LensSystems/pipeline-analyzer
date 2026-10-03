@@ -182,6 +182,16 @@ def main(argv=None) -> int:
                     gui.destroy()
                 print("\nCancelado.", file=sys.stderr)
                 return 130
+            except Exception as exc:  # fallo inesperado de las ventanas: no cerrar en silencio, seguir en la consola
+                if not gui:
+                    raise
+                gui.destroy()
+                gui, use_gui = None, False
+                if not interactive_tty:
+                    compat.notify("Analizador de pipelines", "Las ventanas fallaron: %s" % exc)
+                    return 1
+                print("Las ventanas fallaron (%s). Continuando con preguntas en la consola…\n" % exc, file=sys.stderr)
+                continue
             args.logs = sel["logs"]
             args.pom = args.pom or sel["pom"]
             args.reports = list(args.reports or []) + list(sel.get("reports") or [])
@@ -215,7 +225,7 @@ def main(argv=None) -> int:
 
 
 def gui_main() -> int:
-    """Entrada para doble clic (analizar_pipeline.pyw / pipeline-analyzer-gui): abre las ventanas.
+    """Entrada para doble clic (analizar_pipeline.py / pipeline-analyzer-gui): abre las ventanas.
 
     Sin consola (pythonw) y sin ventanas disponibles, avisa con un cuadro de diálogo del sistema.
     """

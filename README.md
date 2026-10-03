@@ -71,8 +71,8 @@ Cuando un pipeline falla, el log tiene miles de líneas, varias herramientas (te
 git clone https://github.com/LensSystems/pipeline-analyzer.git
 cd pipeline-analyzer
 
-# Asistente interactivo (ventanas o consola)
-python3 analizar_pipeline.py
+# Asistente interactivo: elige solo el mejor modo (ventanas sin consola → ventanas → consola)
+python3 analizar_pipeline.py          # Windows: python analizar_pipeline.py, o doble clic en analizar_pipeline.bat
 
 # O directamente sobre una descarga de logs
 python3 -m pipeline_analyzer logs_123456 --pom pom.xml
@@ -94,7 +94,7 @@ reporte_pipeline/001_2026-09-30/reporte_completo.html
 python3 analizar_pipeline.py
 ```
 
-También puedes hacer doble clic en `analizar_pipeline.command` (macOS) o `analizar_pipeline.bat` (Windows).
+También puedes hacer doble clic en `analizar_pipeline.command` (macOS) o `analizar_pipeline.bat` (Windows, único archivo de arranque).
 
 **En macOS, Windows y Linux** hay la misma pantalla, **Nuevo análisis**, con cuatro filas:
 
@@ -104,6 +104,8 @@ También puedes hacer doble clic en `analizar_pipeline.command` (macOS) o `anali
 | **Comparación** | Una o varias ejecuciones anteriores, para ver qué mejoró o empeoró |
 | **pom.xml** | Para revisar su configuración de build, calidad y dependencias |
 | **Reportes** | PDF de Checkmarx o XML/JSON de PMD, Checkstyle y SpotBugs que no venían en la carpeta o el `.zip` (archivos o una carpeta completa) |
+
+**Un archivo, un solo apartado:** no se puede usar el mismo archivo en dos apartados (ni repetirlo dentro de uno), p. ej. el mismo archivo como comparación, pom y reporte. Si la ruta completa es la misma, aparece «Archivo no válido» y no se agrega. Un archivo con el mismo nombre pero en otra carpeta sí es válido. La consola aplica la misma regla.
 
 Cada elemento agregado tiene su botón naranja **Quitar**; **Analizar** se habilita en cuanto eliges el log principal. La ventana es ancha para que se lean las rutas, se alarga sola al agregar archivos y vuelve a su alto base al quitarlos. Lo único que cambia entre sistemas es el aspecto nativo (ver más abajo) y el orden de los botones.
 
@@ -276,9 +278,9 @@ En Homebrew y en distribuciones Linux recientes, `pip install` global está bloq
 | **macOS · Python de Apple** (`/usr/bin/python3`) | Funciona en consola | Tk 8.5 obsoleto: el programa pregunta por consola |
 | **Linux** | `./analizar_pipeline.sh` o `python3 analizar_pipeline.py` | Debian/Ubuntu `sudo apt install python3-tk` · Fedora `sudo dnf install python3-tkinter` · Arch `sudo pacman -S tk` |
 | **Linux sin escritorio / SSH / WSL** | Igual | Sin `DISPLAY` se usa la consola automáticamente |
-| **Windows** | `analizar_pipeline.bat` (consola) o `analizar_pipeline.pyw` (doble clic, solo ventanas) | Incluidas en el instalador de python.org |
+| **Windows** | `analizar_pipeline.bat` (doble clic): elige solo el mejor modo — ventanas sin consola, ventanas, o consola | Incluidas en el instalador de python.org |
 
-Los lanzadores eligen el mejor Python disponible: primero uno con ventanas y, si no hay, cualquiera 3.8+ en modo consola. `--doctor` muestra la versión de Python, el tipo de instalación, si hay ventanas y cómo habilitarlas.
+Los lanzadores eligen el mejor Python disponible: primero uno con ventanas y, si no hay, cualquiera 3.8+ en modo consola. Sin rutas, `analizar_pipeline.py` prueba de mejor a peor: 1) ventanas (en Windows, sin consola vía `pythonw`), 2) preguntas en la consola, 3) un aviso con el motivo y cómo habilitar las ventanas. Si las ventanas fallan a mitad de camino, continúa en el siguiente modo en vez de cerrarse. Con rutas como argumentos se ejecuta directo en consola. `--doctor` muestra la versión de Python, el tipo de instalación, si hay ventanas y cómo habilitarlas.
 
 **Estado de la verificación.** La suite de pruebas se ha ejecutado en macOS con Python 3.9 y 3.14; la compatibilidad con 3.8 está comprobada a nivel de sintaxis. El flujo de integración continua ([`.github/workflows/tests.yml`](.github/workflows/tests.yml), y su equivalente para Azure DevOps en `azure-pipelines-tests.yml`) ejecuta las pruebas en Linux, Windows y macOS con Python 3.9, 3.11, 3.12 y 3.13.
 

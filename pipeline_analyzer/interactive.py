@@ -48,6 +48,25 @@ def _clean_path(value: str, windows: Optional[bool] = None) -> str:
     return os.path.expanduser(v)
 
 
+def _same(a: str, b: str) -> bool:
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def find_duplicate(path: str, st: Dict[str, object], skip: tuple = ()) -> Optional[str]:
+    """Apartado ("main", "compare", "pom", "reports") donde ya está la misma ruta, o None. Mismo nombre en otra carpeta no cuenta.
+
+    ``skip``: apartados de un solo valor que se están reemplazando (cambiar el log principal por sí mismo es válido).
+    """
+    for key in ("main", "compare", "pom", "reports"):
+        if key in skip:
+            continue
+        value = st.get(key)
+        for existing in ([value] if isinstance(value, str) else (value or [])):
+            if existing and _same(path, existing):
+                return key
+    return None
+
+
 def _ask_path(prompt: str, required: bool, input_fn: Callable[[str], str], out) -> Optional[str]:
     while True:
         try:
@@ -65,6 +84,18 @@ def _ask_path(prompt: str, required: bool, input_fn: Callable[[str], str], out) 
         out.write("  No existe: %s\n" % value)
 
 
+def _ask_unique(prompt: str, required: bool, st: Dict[str, object], input_fn, out) -> Optional[str]:
+    """Como ``_ask_path`` pero rechaza un archivo ya indicado en otro apartado (misma ruta)."""
+    labels = {"main": "el log principal", "compare": "la comparación", "pom": "el pom.xml", "reports": "los reportes"}
+    while True:
+        p = _ask_path(prompt, required, input_fn, out)
+        where = find_duplicate(p, st) if p else None
+        if where is None:
+            return p
+        out.write("  Archivo no válido: ya está en %s. No se puede usar el mismo archivo en más de un apartado "
+                  "(el mismo nombre en otra carpeta sí es válido).\n" % labels[where])
+
+
 def _ask_yes(prompt: str, input_fn: Callable[[str], str]) -> bool:
     try:
         return input_fn(prompt).strip().lower() in ("s", "si", "sí", "y", "yes")
@@ -78,24 +109,25 @@ def gather_console(input_fn: Optional[Callable[[str], str]] = None, out=None) ->
     out = out or sys.stdout
     out.write("\nAnalizador de pipelines — modo interactivo\n")
     out.write("Puedes escribir la ruta o arrastrar la carpeta/archivo a esta ventana.\n\n")
-    main = _ask_path("1) Log principal (carpeta de descarga, .zip o archivo de log): ", True, input_fn, out)
-    compare: List[str] = []
+    st: Dict[str, object] = {"main": None, "compare": [], "pom": None, "reports": []}
+    main = st["main"] = _ask_path("1) Log principal (carpeta de descarga, .zip o archivo de log): ", True, input_fn, out)
+    compare: List[str] = st["compare"]
     while _ask_yes("2) ¿Agregar un log de comparación (ejecución anterior)? [s/N]: ", input_fn):
-        p = _ask_path("   Ruta del log de comparación: ", False, input_fn, out)
+        p = _ask_unique("   Ruta del log de comparación: ", False, st, input_fn, out)
         if p:
             compare.append(p)
     pom = None
     if _ask_yes("3) ¿Agregar el pom.xml para revisarlo? [s/N]: ", input_fn):
-        pom = _ask_path("   Ruta del pom.xml: ", False, input_fn, out)
-    reports: List[str] = []
+        pom = st["pom"] = _ask_unique("   Ruta del pom.xml: ", False, st, input_fn, out)
+    reports: List[str] = st["reports"]
     if _ask_yes("4) ¿Agregar reportes de las herramientas (PDF/JSON/XML de Checkmarx, PMD, SpotBugs…)? "
                 "Úsalo si no venían en la carpeta o el .zip [s/N]: ", input_fn):
         while True:
-            p = _ask_path("   Ruta del reporte o carpeta (Enter para terminar): ", False, input_fn, out)
+            p = _ask_unique("   Ruta del reporte o carpeta (Enter para terminar): ", False, st, input_fn, out)
             if not p:
                 break
             reports.append(p)
-            out.write("   Agregado (%d). \n" % len(reports))
+            out.write("   Agregado (%d).\n" % len(reports))
     return {"logs": compare + [main], "pom": pom, "main": main, "reports": reports}
 
 
@@ -441,7 +473,8 @@ class Gui:
         """
         tk = self.tk
         w, h, r = 66, 26, 7
-        c = tk.Canvas(parent, width=w, height=h, bg=self._card_bg, highlightthickness=0, bd=0, takefocus=1, cursor="pointinghand")
+        c = tk.Canvas(parent, width=w, height=h, bg=self._card_bg, highlightthickness=0, bd=0, takefocus=1,
+                      cursor="pointinghand" if self.mac else "hand2")   # «pointinghand» solo existe en macOS: en Windows cerraba la ventana
 
         def draw(fill: str, ring: Optional[str] = None) -> None:
             c.delete("all")
@@ -526,19 +559,43 @@ class Gui:
                 else:
                     del st["compare" if what == "cmp" else "reports"][int(idx)]
             elif kind == "main":
-                st["main"] = self._open(arg, "Selecciona la ejecución a analizar") or st["main"]
+                p = self._open(arg, "Selecciona la ejecución a analizar")
+                if p and self._accept(p, st, "main"):
+                    st["main"] = p
             elif kind == "cmp":
                 p = self._open(arg, "Selecciona la ejecución anterior")
-                if p and p not in compare:
+                if p and self._accept(p, st, "compare"):
                     compare.append(p)
             elif action == "pom":
-                st["pom"] = self.ask_pom() or st["pom"]
+                p = self.ask_pom()
+                if p and self._accept(p, st, "pom"):
+                    st["pom"] = p
             elif action == "rep:files":
-                reports += [p for p in self._open_many("Selecciona los reportes") if p not in reports]
+                for p in self._open_many("Selecciona los reportes"):
+                    if self._accept(p, st, "reports"):
+                        reports.append(p)
             elif action == "rep:dir":
                 p = self._open("dir", "Selecciona la carpeta con los reportes")
-                if p and p not in reports:
+                if p and self._accept(p, st, "reports"):
                     reports.append(p)
+
+    SECTIONS = {"main": "Log principal", "compare": "Comparación", "pom": "pom.xml", "reports": "Reportes"}
+
+    def _accept(self, path: str, st: Dict[str, object], section: str) -> bool:
+        """Rechaza (con aviso) un archivo ya elegido en cualquiera de los 4 apartados: misma ruta, no solo el mismo nombre."""
+        where = find_duplicate(path, st, skip=(section,) if section in ("main", "pom") else ())
+        if where is None:
+            return True
+        self._warn("Archivo no válido", "«%s» ya está en «%s».\nNo se puede usar el mismo archivo en más de un apartado "
+                   "(ni repetirlo). Elige otro; un archivo con el mismo nombre pero en otra carpeta sí es válido."
+                   % (Path(path).name, self.SECTIONS[where]))
+        return False
+
+    def _warn(self, title: str, detail: str) -> None:
+        try:
+            self.root.tk.call("tk_messageBox", "-parent", ".", "-type", "ok", "-icon", "warning", "-message", title, "-detail", detail)
+        except Exception:
+            pass
 
     # ---------------------------------------------------------------- avance
 
