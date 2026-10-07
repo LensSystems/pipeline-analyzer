@@ -6,7 +6,15 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 ## [Sin publicar]
 
 ### Añadido
+- **«Solo comparación»** (botón nativo, aparece al elegir el log principal y al menos una comparación; en consola, una pregunta; en CLI, `--compare-only`): genera únicamente el comparativo viejo → nuevo (qué mejoró, empeoró o cambió y qué hallazgos se resolvieron, aparecieron o siguen pendientes), sin pom ni reportes de herramientas. «FALLO» y «NO EJECUTADO» cuentan como lo mismo al comparar. Los reportes HTML, PDF, Markdown y JSON se limitan a eso.
 - **Validación de archivos repetidos** (ventanas y consola): el mismo archivo (misma ruta) no se puede usar en dos apartados (log principal, comparación, pom.xml, reportes) ni repetirse; sale «Archivo no válido». El mismo nombre en otra carpeta sí se acepta.
+- **Reporte HTML:** enlace «Historial de reportes» en el menú lateral para abrir la lista de todos los análisis sin buscar el archivo.
+
+### Cambiado
+- **Reporte HTML e historial rediseñados:** títulos con tipografía redondeada del sistema, índice con la sección actual resaltada, filas de las tablas con una marca de color según lo que pasó, y en «Solo comparación» un titular, una barra proporcional y su leyenda. El historial tiene buscador redondeado y etiqueta «Solo comparación».
+- **Ventana:** el botón «Quitar» es más pequeño y redondeado, y la ayuda «Doble clic en un archivo para abrirlo» queda justo debajo de la lista de resultados, que se ajusta a su contenido (hasta 8 filas, luego se desplaza).
+- **Modo oscuro** con una paleta de azul marino (`#16213e`) en lugar de negro: tarjetas más claras que el fondo, bloques de código más profundos y estados claros teñidos del mismo tono. Se aplica al reporte HTML y al historial; la ventana de la aplicación mantiene el aspecto nativo del sistema.
+- **Comparativa más clara en todos los reportes:** con dos ejecuciones la tabla es «Antes · Ahora · Cambio» (ya no se repite «vs anterior» y «vs primera», que eran lo mismo). Primero van las métricas que cambiaron, la peor primero, con la diferencia («Mejoró (-9)»); al final, las que siguen igual, marcadas «Sin cambios». Con tres o más ejecuciones se agrega la columna «Desde la primera». Los hallazgos se agrupan como Resueltos, Nuevos, Siguen pendientes y No verificables, con una explicación breve.
 
 ### Corregido
 - **Windows: la ventana se cerraba al agregar un archivo.** El botón «Quitar» usaba el cursor `pointinghand`, que solo existe en macOS; Tk en Windows lanzaba un error y la aplicación terminaba sin avisar. Ahora usa `hand2` fuera de macOS, y cualquier fallo inesperado de las ventanas pasa a la consola (o muestra un aviso) en vez de cerrarse en silencio.

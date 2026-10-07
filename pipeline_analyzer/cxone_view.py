@@ -44,7 +44,7 @@ text-align:center;padding:8px 10px;border-bottom:2px solid var(--border)}.cxt th
 @media(max-width:640px){.cxk .big{font-size:32px}.cxt{font-size:13px}.cxt td,.cxt th{padding:7px 6px}}
 """
 CSS_VARS = (":root{--sevC:#8c1d18;--sevH:#c4321f;--sevM:#b7791f;--sevL:#3b6fb6}"
-            "@media (prefers-color-scheme:dark){:root{--sevC:#d9534f;--sevH:#ef7a63;--sevM:#d8a233;--sevL:#6f9be0}.n:not(.z){color:#161615}}")
+            "@media (prefers-color-scheme:dark){:root{--sevC:#ff8f84;--sevH:#ff9f8f;--sevM:#f2c96d;--sevL:#8fb0f5}.n:not(.z){color:#111a33}}")
 
 
 def _e(s: Any) -> str:

@@ -97,6 +97,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "reglas, archivos y líneas en el HTML. Se puede repetir. También se busca en la carpeta de logs y en el target/ del pom")
     ap.add_argument("--dump-pdf", metavar="PDF", help="Muestra el texto que se lee de un PDF de Checkmarx y los hallazgos que se interpretan "
                     "(para diagnosticar un PDF que no se reconoce) y termina")
+    ap.add_argument("--compare-only", action="store_true",
+                    help="Solo compara las ejecuciones (viejo → nuevo, en orden cronológico): qué mejoró, empeoró o cambió y qué hallazgos se "
+                         "resolvieron o aparecieron. No revisa el pom ni los reportes de herramientas. Requiere al menos dos ejecuciones")
     ap.add_argument("--labels", help="Etiquetas separadas por coma, una por ejecución y en el mismo orden")
     ap.add_argument("--keep-order", action="store_true", help="No reordenar las ejecuciones por fecha de inicio")
     ap.add_argument("--out-dir", help="Carpeta base de los reportes (default: reporte_pipeline; en modo interactivo, junto al log principal). "
@@ -193,6 +196,7 @@ def main(argv=None) -> int:
                 print("Las ventanas fallaron (%s). Continuando con preguntas en la consola…\n" % exc, file=sys.stderr)
                 continue
             args.logs = sel["logs"]
+            args.compare_only = args.compare_only or bool(sel.get("compare_only"))
             args.pom = args.pom or sel["pom"]
             args.reports = list(args.reports or []) + list(sel.get("reports") or [])
             if args.out_dir is None:
@@ -247,6 +251,12 @@ def _run(args, gui) -> int:
     if not paths:
         print("No se encontraron logs en: " + ", ".join(args.logs), file=sys.stderr)
         return 2
+
+    if args.compare_only and len(paths) < 2:
+        print("--compare-only necesita al menos dos ejecuciones (la anterior y la nueva).", file=sys.stderr)
+        return 2
+    if args.compare_only:  # solo se comparan los logs: el pom y los reportes de herramientas no intervienen
+        args.pom, args.reports = None, []
 
     labels = [x.strip() for x in args.labels.split(",")] if args.labels else []
     if labels and len(labels) != len(paths):
@@ -308,7 +318,7 @@ def _run(args, gui) -> int:
             else:
                 seen[r.label] = 1
 
-        analysis = Analysis(runs)
+        analysis = Analysis(runs, compare_only=args.compare_only)
         if args.pom:
             prog.stage("Revisando %s" % Path(args.pom).name)
             try:
@@ -319,18 +329,19 @@ def _run(args, gui) -> int:
                 prog.log("Aviso: no se pudo analizar el pom (%s)" % exc)
             prog.advance()
 
-        report_dirs = [Path(r) for r in (args.reports or [])]
-        report_dirs += [p for p in paths if p.is_dir() or p.suffix.lower() == ".zip"]
-        if args.pom and (Path(args.pom).parent / "target").is_dir():
-            report_dirs.append(Path(args.pom).parent / "target")
-        audit: List[dict] = []
-        analysis.tool_reports = discover_reports([d for d in report_dirs if d.exists()], audit)
-        analysis.review = inventory.build(list(paths) + [d for d in report_dirs if d not in paths and d.exists()], audit)
-        c = analysis.review["counts"]
-        prog.log("Archivos revisados: %d (%d logs, %d definiciones, %d reportes de herramientas, %d ignorados)"
-                 % (c["total"], c["logs"], c["definiciones"], c["reportes"], c["ignorados"]))
-        if analysis.tool_reports:
-            prog.log("Reportes de herramientas: " + ", ".join("%s (%d)" % (t, r["total"]) for t, r in analysis.tool_reports.items()))
+        if not args.compare_only:
+            report_dirs = [Path(r) for r in (args.reports or [])]
+            report_dirs += [p for p in paths if p.is_dir() or p.suffix.lower() == ".zip"]
+            if args.pom and (Path(args.pom).parent / "target").is_dir():
+                report_dirs.append(Path(args.pom).parent / "target")
+            audit: List[dict] = []
+            analysis.tool_reports = discover_reports([d for d in report_dirs if d.exists()], audit)
+            analysis.review = inventory.build(list(paths) + [d for d in report_dirs if d not in paths and d.exists()], audit)
+            c = analysis.review["counts"]
+            prog.log("Archivos revisados: %d (%d logs, %d definiciones, %d reportes de herramientas, %d ignorados)"
+                     % (c["total"], c["logs"], c["definiciones"], c["reportes"], c["ignorados"]))
+            if analysis.tool_reports:
+                prog.log("Reportes de herramientas: " + ", ".join("%s (%d)" % (t, r["total"]) for t, r in analysis.tool_reports.items()))
 
         if formats:
             out = new_run_dir(Path(args.out_dir))
@@ -358,7 +369,7 @@ def _run(args, gui) -> int:
     except BaseException:
         prog.close()
         raise
-    prog.close("Análisis completado: %d ejecución(es)" % len(paths))
+    prog.close(("Comparación completada: %d ejecuciones" if args.compare_only else "Análisis completado: %d ejecución(es)") % len(paths))
     if gui:
         gui.close_progress()
 
@@ -370,7 +381,7 @@ def _run(args, gui) -> int:
 
     if gui:
         counts = {s: sum(1 for f in analysis.last.findings + analysis.pom_findings if f.severity == s) for s in SEVERITIES}
-        gui.show_result(analysis.verdict(), counts, [str(Path(w).resolve()) for w in written])
+        gui.show_result(analysis.verdict(), counts, [str(Path(w).resolve()) for w in written], analysis.is_ok())
 
     if args.fail_on:
         limit = SEVERITY_RANK[args.fail_on]
