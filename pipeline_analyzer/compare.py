@@ -102,11 +102,9 @@ def _sum(m, *path):
 
 
 def _score(v: Any, better: str) -> Optional[float]:
-    """Puntaje comparable: mayor = mejor. NO EJECUTADO < FALLO < cualquier resultado medido."""
+    """Puntaje comparable: mayor = mejor. NO EJECUTADO = FALLO < cualquier resultado medido."""
     s = str(v).upper()
-    if s.startswith("NO EJECUTADO"):
-        return -1e9
-    if s.startswith("FALLO") or s == "ERROR":
+    if s.startswith(("NO EJECUTADO", "FALLO")) or s == "ERROR":   # para la comparativa, «no se ejecutó» y «falló» son lo mismo
         return -1e6
     if s in ("OK", "PASO"):
         return 0.0
@@ -134,6 +132,36 @@ def trend(old: Any, new: Any, better: Optional[str]) -> str:
     return SAME
 
 
+def delta(old: Any, new: Any) -> str:
+    """Diferencia numérica con signo («-9», «+2.5»); vacío si los valores no son números."""
+    if isinstance(old, bool) or isinstance(new, bool):
+        return ""
+    try:
+        d = float(new) - float(old)
+    except (TypeError, ValueError):
+        return ""
+    if d == 0:
+        return ""
+    txt = ("%.1f" % abs(d)).rstrip("0").rstrip(".")
+    return ("+" if d > 0 else "-") + txt
+
+
+def kind(old: Any, new: Any, better: Optional[str]) -> str:
+    """Qué pasó entre dos valores: improved | worse | changed (cambió, sin juicio de mejor/peor) | same."""
+    if old is None and new is None:
+        return "same"
+    if str(old) == str(new):
+        return "same"
+    t = trend(old, new, better)
+    if t == SAME:
+        return "same"
+    if t == IMPROVED:
+        return "improved"
+    if t == WORSE:
+        return "worse"
+    return "changed"
+
+
 def comparison_table(runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     rows = []
     for key, label, getter, better in METRICS:
@@ -151,8 +179,38 @@ def comparison_table(runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "values": values,
             "trend_prev": trend(values[-2], values[-1], better) if len(values) > 1 else NA,
             "trend_first": trend(values[0], values[-1], better) if len(values) > 1 else NA,
+            "kind": kind(values[-2], values[-1], better) if len(values) > 1 else "same",
+            "delta": delta(values[-2], values[-1]) if len(values) > 1 else "",
+            "kind_first": kind(values[0], values[-1], better) if len(values) > 1 else "same",
+            "delta_first": delta(values[0], values[-1]) if len(values) > 1 else "",
         })
     return rows
+
+
+def comparison_summary(rows: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    """Agrupa las métricas por lo que pasó entre la penúltima y la última ejecución (viejo → nuevo)."""
+    out: Dict[str, List[Dict[str, Any]]] = {"worse": [], "improved": [], "changed": [], "same": []}
+    for r in rows:
+        out[r["kind"]].append(r)
+    return out
+
+
+def summary_text(groups: Dict[str, List[Any]]) -> str:
+    """Una frase: «3 mejoraron · 1 empeoró · 2 cambiaron · 18 sin cambios»."""
+    parts = []
+    n = len(groups["improved"])
+    if n:
+        parts.append("%d %s" % (n, "mejoró" if n == 1 else "mejoraron"))
+    n = len(groups["worse"])
+    if n:
+        parts.append("%d %s" % (n, "empeoró" if n == 1 else "empeoraron"))
+    n = len(groups["changed"])
+    if n:
+        parts.append("%d %s" % (n, "cambió" if n == 1 else "cambiaron"))
+    n = len(groups["same"])
+    if n:
+        parts.append("%d sin cambios" % n)
+    return " · ".join(parts) or "Sin métricas para comparar"
 
 
 # Hallazgos que solo pueden confirmarse como resueltos si su herramienta se ejecutó

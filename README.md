@@ -54,7 +54,7 @@ Cuando un pipeline falla, el log tiene miles de líneas, varias herramientas (te
 
 - **Multi-proveedor:** Azure DevOps (carpeta o `.zip` de la descarga), GitHub Actions, GitLab CI, Jenkins y logs genéricos. El proveedor se detecta solo.
 - **Ruta para pasar el pipeline:** pasos ordenados (desbloquear el pipeline, tests, análisis estático, Sonar, seguridad), cada uno con su criterio de «listo cuando» y los comandos para validar en local.
-- **Comparativa entre ejecuciones:** tendencia por métrica y hallazgos *resueltos, nuevos, persistentes* o *no verificables*.
+- **Comparativa entre ejecuciones:** tabla *Antes · Ahora · Cambio* con lo que cambió primero (y la diferencia) y, al final, lo que sigue igual, y hallazgos *resueltos, nuevos, pendientes* o *no verificables*. El botón **Solo comparación** genera únicamente esto.
 - **Seguridad:** secretos en claro, TLS deshabilitado, `curl | bash`, imágenes `:latest`, ramas mutables, CVE conocidos, manifiestos de Kubernetes, definición del pipeline y `pom.xml`.
 - **Detalle exacto por herramienta:** con los reportes XML/JSON de PMD, Checkstyle, SpotBugs y CxOne (JSON o el **PDF/Scan Report descargado de Checkmarx**, que se cruza con el log y propone la solución de cada hallazgo) muestra regla, archivo y línea.
 - **Resultados de CxOne completos:** tabla del *Scan Summary* del log con todos los motores (SAST, SCA, SCS, IaC, APIs, Containers), total, Secret Detection y Scorecard; los motores que no corrieron se muestran como «no ejecutado».
@@ -107,6 +107,8 @@ También puedes hacer doble clic en `analizar_pipeline.command` (macOS) o `anali
 
 **Un archivo, un solo apartado:** no se puede usar el mismo archivo en dos apartados (ni repetirlo dentro de uno), p. ej. el mismo archivo como comparación, pom y reporte. Si la ruta completa es la misma, aparece «Archivo no válido» y no se agrega. Un archivo con el mismo nombre pero en otra carpeta sí es válido. La consola aplica la misma regla.
 
+**Solo comparación:** cuando hay log principal y al menos una comparación aparece el botón **Solo comparación** (en consola, una pregunta; en la línea de comandos, `--compare-only`). Genera solo el comparativo viejo → nuevo, sin pom ni reportes de herramientas, y los reportes contienen únicamente eso.
+
 Cada elemento agregado tiene su botón naranja **Quitar**; **Analizar** se habilita en cuanto eliges el log principal. La ventana es ancha para que se lean las rutas, se alarga sola al agregar archivos y vuelve a su alto base al quitarlos. Lo único que cambia entre sistemas es el aspecto nativo (ver más abajo) y el orden de los botones.
 
 Después, una ventana muestra el avance (con barra determinada) y, al terminar, el veredicto, los hallazgos por severidad y los archivos generados:
@@ -127,6 +129,9 @@ python3 -m pipeline_analyzer logs_123456
 
 # Comparar dos ejecuciones y revisar el pom
 python3 -m pipeline_analyzer logs_123400 logs_123456.zip --pom pom.xml
+
+# Solo el comparativo viejo → nuevo (sin análisis completo)
+python3 -m pipeline_analyzer logs_123400 logs_123456 --compare-only
 
 # Carpeta que agrupa varias descargas logs_* (cada una es una ejecución)
 python3 -m pipeline_analyzer descargas/
@@ -149,6 +154,7 @@ python3 -m pipeline_analyzer logs_123456 --fail-on HIGH --formats none
 | `--pom` | `pom.xml` a revisar |
 | `--dump-pdf PDF` | Muestra el texto que se lee de un PDF de Checkmarx y los hallazgos que se interpretan; sirve para diagnosticar un PDF que no se reconoce |
 | `--reports` | Carpeta o archivo con reportes de herramientas (PMD, Checkstyle y SpotBugs en XML; JSON de resultados o PDF descargado de Checkmarx/CxOne). Se puede repetir. También se buscan solos en la carpeta de logs y en el `target/` junto al `pom.xml` |
+| `--compare-only` | Solo compara las ejecuciones (viejo → nuevo): qué mejoró, empeoró o cambió y qué hallazgos se resolvieron o aparecieron. No revisa pom ni reportes de herramientas; necesita al menos dos ejecuciones |
 | `--labels` | Etiquetas por ejecución, en el mismo orden |
 | `--keep-order` | No reordenar las ejecuciones por fecha |
 | `--out-dir` | Carpeta base de los reportes (por defecto `reporte_pipeline/`). Cada análisis crea una subcarpeta nueva y **nunca sobrescribe** las anteriores |
@@ -217,7 +223,9 @@ Cada ejecución crea una subcarpeta nueva dentro de la carpeta de salida, con n�
 
 **Orden de los reportes.** Primero lo que bloquea el pipeline y lo que tú puedes corregir; al final, *Recomendaciones para quien administra el pipeline* (configuración del SCM, que normalmente no está al alcance del equipo de desarrollo) y las validaciones de seguridad de referencia. Si algo del pipeline afecta a que tu proyecto pase, se etiqueta con `⚙ pipeline:` y, en HTML y PDF, un clic lleva a la causa.
 
-**Diseño del HTML.** El veredicto es el título de la página y debajo hay una **franja del pipeline** con una parada por verificación (verde: pasa, rojo: bloquea, gris: no se ejecutó). En pantallas anchas, un **índice lateral** fijo marca con un punto rojo las secciones que bloquean; en móvil pasa arriba. Los pasos de la ruta que bloquean llevan una barra roja. Usa la tipografía del sistema (San Francisco en Mac, Segoe UI en Windows), modo claro y oscuro automáticos, y se imprime con todas las secciones abiertas.
+**Diseño del HTML.** El veredicto es el título de la página y debajo hay una **franja del pipeline** con una parada por verificación (verde: pasa, rojo: bloquea, gris: no se ejecutó). En pantallas anchas, un **índice lateral** fijo marca con un punto rojo las secciones que bloquean; en móvil pasa arriba. Los pasos de la ruta que bloquean llevan una barra roja. El índice marca la sección en la que estás y empieza con **Historial de reportes**, un enlace a la lista de todos los análisis. Usa la tipografía del sistema (San Francisco en Mac, Segoe UI en Windows), modo claro y oscuro automáticos (el oscuro en azul marino, no en negro; vale para el reporte y el historial, no para la ventana), y se imprime con todas las secciones abiertas.
+
+**Reporte «Solo comparación».** Un titular en una frase («despues está mejor que antes»), una barra proporcional (mejoraron, empeoraron, cambiaron, sin cambios) y la tabla *Antes · Ahora · Cambio* con lo que cambió primero y lo que sigue igual al final, marcado «Sin cambios». Debajo, los hallazgos resueltos, nuevos y pendientes.
 
 **HTML con secciones plegables.** Siempre visibles: el resumen, la *ruta para pasar el pipeline* y los *resultados de CxOne* con sus hallazgos y soluciones. Plegadas (solo título y un dato breve, se expanden con un clic, desde el menú o desde un enlace interno): plan de acción, hallazgos del proyecto, comparativa, ejecuciones, archivos revisados, recomendaciones del pipeline y validaciones. Al imprimir se abren todas.
 

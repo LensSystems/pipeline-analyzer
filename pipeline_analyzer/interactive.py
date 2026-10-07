@@ -6,7 +6,8 @@
 
 Entradas (una sola pantalla, igual en macOS, Windows y Linux):
   - Log principal (obligatorio): carpeta de descarga, .zip o archivo de log.
-  - Comparación (opcional): una o varias ejecuciones anteriores.
+  - Comparación (opcional): una o varias ejecuciones anteriores. Con ellas aparece «Solo comparación» (botón nativo): genera
+    únicamente el comparativo viejo → nuevo, sin pom ni reportes de herramientas.
   - pom.xml (opcional).
   - Reportes de las herramientas (opcional): PDF/JSON/XML/Markdown de Checkmarx, PMD, Checkstyle, SpotBugs…, por si no venían
     incluidos en la carpeta o el .zip de logs; archivos o carpetas.
@@ -116,6 +117,8 @@ def gather_console(input_fn: Optional[Callable[[str], str]] = None, out=None) ->
         p = _ask_unique("   Ruta del log de comparación: ", False, st, input_fn, out)
         if p:
             compare.append(p)
+    if compare and _ask_yes("   ¿Solo comparar viejo → nuevo, sin el análisis completo? [s/N]: ", input_fn):
+        return {"logs": compare + [main], "pom": None, "main": main, "reports": [], "compare_only": True}
     pom = None
     if _ask_yes("3) ¿Agregar el pom.xml para revisarlo? [s/N]: ", input_fn):
         pom = st["pom"] = _ask_unique("   Ruta del pom.xml: ", False, st, input_fn, out)
@@ -128,7 +131,7 @@ def gather_console(input_fn: Optional[Callable[[str], str]] = None, out=None) ->
                 break
             reports.append(p)
             out.write("   Agregado (%d).\n" % len(reports))
-    return {"logs": compare + [main], "pom": pom, "main": main, "reports": reports}
+    return {"logs": compare + [main], "pom": pom, "main": main, "reports": reports, "compare_only": False}
 
 
 # ====================================================================== ventanas (tkinter)
@@ -472,7 +475,7 @@ class Gui:
         Se dibuja en un Canvas del mismo alto que un botón pequeño de macOS; admite foco (Tab), Espacio/Enter y estado al pasar el ratón.
         """
         tk = self.tk
-        w, h, r = 66, 26, 7
+        w, h, r = 56, 22, 11    # más chico y con los extremos totalmente redondeados
         c = tk.Canvas(parent, width=w, height=h, bg=self._card_bg, highlightthickness=0, bd=0, takefocus=1,
                       cursor="pointinghand" if self.mac else "hand2")   # «pointinghand» solo existe en macOS: en Windows cerraba la ventana
 
@@ -544,10 +547,13 @@ class Gui:
             self._form_row(card, "pom.xml", [(pom, "rm:pom")] if pom else [], [("Elegir…", "pom")], "Revisa build, calidad y dependencias")
             self._form_row(card, "Reportes", [(r, "rm:rep:%d" % i) for i, r in enumerate(reports)],
                            [("Archivos…", "rep:files"), ("Carpeta…", "rep:dir")], "PDF, JSON, XML o Markdown de las herramientas", last=True)
-            action = self._choice([("Analizar", "go"), ("Cancelar", "skip")], disabled=() if main else ("go",))
+            options = [("Analizar", "go")] + ([("Solo comparación", "cmp")] if main and compare else []) + [("Cancelar", "skip")]
+            action = self._choice(options, disabled=() if main else ("go",))
             kind, _, arg = action.partition(":")
             if action == "go":
-                return {"logs": list(compare) + [main], "pom": pom, "main": main, "reports": list(reports)}
+                return {"logs": list(compare) + [main], "pom": pom, "main": main, "reports": list(reports), "compare_only": False}
+            if action == "cmp":   # solo viejo → nuevo: el pom y los reportes no intervienen
+                return {"logs": list(compare) + [main], "pom": None, "main": main, "reports": [], "compare_only": True}
             if action == "skip":
                 raise Cancelled()
             if kind == "rm":
@@ -650,17 +656,21 @@ class Gui:
 
     # ---------------------------------------------------------------- resultado
 
+    RESULT_ROWS = 8     # filas visibles de la lista de resultados antes de mostrar la barra de desplazamiento
+
     def _file_list(self, paths: List[str]) -> None:
         """Lista nativa y desplazable de los archivos generados; la carpeta se muestra una vez. Nunca empuja los botones."""
         ttk = self.ttk
-        if paths:  # se empaqueta primero (abajo): su espacio queda reservado y la lista cede altura, nunca se recorta
-            ttk.Label(self.body, text="Carpeta: " + str(Path(paths[0]).parent) + "\nDoble clic en un archivo para abrirlo",
-                      font=self.f_small, foreground=self._secondary,
-                      wraplength=self.WIDTH - 84, justify="left").pack(side="bottom", fill="x", pady=(8, 0))
+        if paths:  # se empaqueta primero (abajo): su espacio queda reservado y nunca se recorta
+            lbl = ttk.Label(self.body, text="Carpeta: " + str(Path(paths[0]).parent), font=self.f_small, foreground=self._secondary,
+                            wraplength=self.WIDTH - 84, justify="left")
+            lbl.pack(side="bottom", fill="x", pady=(10, 0))
+            self._wrapped.append((lbl, 0))
         frame = ttk.Frame(self.body)
-        frame.pack(fill="both", expand=True)
+        frame.pack(fill="x")   # la lista mide lo que contiene (hasta 8 filas; después se desplaza): la ayuda queda justo debajo del último archivo
         sb = ttk.Scrollbar(frame, orient="vertical")
-        tree = ttk.Treeview(frame, columns=("desc",), height=6, yscrollcommand=sb.set, selectmode="browse")
+        tree = ttk.Treeview(frame, columns=("desc",), height=max(3, min(len(paths), self.RESULT_ROWS)), yscrollcommand=sb.set,
+                            selectmode="browse")
         tree.heading("#0", text="Archivo", anchor="w")
         tree.heading("desc", text="Descripción", anchor="w")
         tree.column("#0", width=230, stretch=False)
@@ -670,8 +680,13 @@ class Gui:
             tree.insert("", "end", text=name, values=(FILE_INFO.get(name, ""),))
         sb.configure(command=tree.yview)
         tree.pack(side="left", fill="both", expand=True)
-        if len(paths) > 6:
+        if len(paths) > self.RESULT_ROWS:
             sb.pack(side="right", fill="y")
+        if paths:
+            hint = ttk.Label(self.body, text="Doble clic en un archivo para abrirlo", font=self.f_small, foreground=self._secondary,
+                             wraplength=self.WIDTH - 84, justify="left")
+            hint.pack(fill="x", pady=(6, 0))
+            self._wrapped.append((hint, 0))
         # el doble clic (o Enter) abre el elemento
         by_name = {Path(p).name: p for p in paths}
 
@@ -683,10 +698,10 @@ class Gui:
         tree.bind("<Return>", open_row)
 
 
-    def show_result(self, verdict: str, counts: Dict[str, int], written: List[str]) -> None:
+    def show_result(self, verdict: str, counts: Dict[str, int], written: List[str], ok: Optional[bool] = None) -> None:
         self.busy = False
         self._clear("Análisis completado")
-        ok = verdict.startswith("Todos")
+        ok = verdict.startswith("Todos") if ok is None else ok
         pal = self._pal()
         color = pal["ok"] if ok else pal["bad"]
         top = self.tk.Frame(self.body, bg=self._bg)

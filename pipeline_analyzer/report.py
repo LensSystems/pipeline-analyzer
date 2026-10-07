@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from . import BRAND, __version__
-from .compare import IMPROVED, NA, SAME, WORSE, comparison_table, findings_diff
+from .compare import IMPROVED, NA, SAME, WORSE, comparison_summary, comparison_table, findings_diff, summary_text
 from .pdf import AMBER, BAND, BLUE, GREEN, MUTED, RED, PdfDoc
 from . import tool_reports as TR
 from .cxone_pdf import reconcile
@@ -44,6 +44,7 @@ class Analysis:
     pom_path: Optional[str] = None
     review: Dict[str, Any] = field(default_factory=dict)         # inventario de archivos revisados (carpetas/.zip compartidos)
     tool_reports: Dict[str, Any] = field(default_factory=dict)  # PMD/Checkstyle/SpotBugs/CxOne leídos de --reports
+    compare_only: bool = False                                   # «Solo comparación»: el reporte contiene únicamente viejo → nuevo
 
     def _cx_extra(self, mod: str) -> str:
         """« · 9 Medium · 2 Low» del motor, para que el resumen no oculte lo que el breaker no bloquea."""
@@ -193,7 +194,17 @@ class Analysis:
         items.sort(key=lambda f: SEVERITY_RANK[f.severity])
         return items[:limit]
 
+    def is_ok(self) -> bool:
+        """Verde en el reporte: en el análisis completo, todos los breakers pasaron; en «solo comparación», nada empeoró ni apareció."""
+        if self.compare_only:
+            d = self.diff() or {"new": []}
+            return not comparison_summary(self.comparison())["worse"] and not d["new"]
+        return self.verdict().startswith("Todos")
+
     def verdict(self) -> str:
+        if self.compare_only:
+            return "Comparación %s → %s: %s" % (self.runs[-2].label, self.runs[-1].label,
+                                               summary_text(comparison_summary(self.comparison())))
         gates = self.gates()
         bad = [g["name"] for g in gates if g["status"] not in ("OK", "PASO", "ALERTA")]
         if not bad:
@@ -209,6 +220,41 @@ def _fmt(v: Any) -> str:
     return str(v)
 
 
+_KIND_TXT = {"improved": "Mejoró", "worse": "Empeoró", "changed": "Cambió", "same": "Sin cambios"}
+_DIFF_GROUPS = (("resolved", "Resueltos", "ya no aparecen"), ("new", "Nuevos", "aparecen ahora"),
+                ("persistent", "Siguen pendientes", "estaban y siguen"), ("unverified", "No verificables", "su herramienta no se ejecutó"))
+
+
+def _change(kind: str, delta: str, old: Any = 1, new: Any = 1) -> str:
+    if kind == "changed" and new is None:
+        return "Sin dato ahora"      # la herramienta ya no aparece en el log nuevo
+    if kind == "changed" and old is None:
+        return "Dato nuevo"
+    return _KIND_TXT[kind] + (" (%s)" % delta if delta and kind != "same" else "")
+
+
+def compare_view(a: Analysis) -> Dict[str, Any]:
+    """Comparativa lista para mostrar: primero lo que cambió (peor primero) y al final lo que sigue igual.
+
+    Con dos ejecuciones: Antes · Ahora · Cambio (no se repite «vs anterior» y «vs primera», que serían lo mismo).
+    Con más: el valor de cada ejecución, el cambio frente a la anterior y el cambio desde la primera.
+    """
+    rows = a.comparison()
+    groups = comparison_summary(rows)
+    labels = [r.label for r in a.runs]
+    multi = len(labels) > 2
+    heads = ["Métrica"] + (labels if multi else ["Antes · " + labels[0], "Ahora · " + labels[1]]) + \
+        ["Cambio vs " + labels[-2] if multi else "Cambio"] + (["Desde " + labels[0]] if multi else [])
+    out = []
+    for r in groups["worse"] + groups["improved"] + groups["changed"] + groups["same"]:   # lo que sigue igual también se ve
+        cells = [r["label"]] + [_fmt(v) for v in r["values"]] + [_change(r["kind"], r["delta"], r["values"][-2], r["values"][-1])]
+        if multi:
+            cells.append(_change(r["kind_first"], r["delta_first"], r["values"][0], r["values"][-1]))
+        out.append({"cells": cells, "kind": r["kind"], "kind_first": r["kind_first"]})
+    return {"heads": heads, "rows": out, "summary": summary_text(groups), "groups": groups, "multi": multi,
+            "same": [r["label"] for r in groups["same"]], "old": labels[-2], "new": labels[-1]}
+
+
 def _sev_counts(findings: List[Finding]) -> Dict[str, int]:
     return {s: sum(1 for f in findings if f.severity == s) for s in SEVERITIES}
 
@@ -216,10 +262,9 @@ def _sev_counts(findings: List[Finding]) -> Dict[str, int]:
 # ====================================================================== consola
 
 _ANSI = {"CRITICAL": "\033[1;31m", "HIGH": "\033[31m", "MEDIUM": "\033[33m", "LOW": "\033[36m", "INFO": "\033[37m",
-         "OK": "\033[32m", "FALLO": "\033[31m", "NO EJECUTADO": "\033[35m", "ALERTA": "\033[33m", IMPROVED: "\033[32m", WORSE: "\033[31m"}
+         "OK": "\033[32m", "FALLO": "\033[31m", "NO EJECUTADO": "\033[35m", "ALERTA": "\033[33m", IMPROVED: "\033[32m", WORSE: "\033[31m",
+         "Mejoró": "\033[32m", "Empeoró": "\033[31m"}
 _RESET = "\033[0m"
-_TREND_TXT = {IMPROVED: "↑ mejoró", WORSE: "↓ empeoró", SAME: "= igual", NA: "·"}
-_TREND_ASCII = {IMPROVED: "+ mejoró", WORSE: "- empeoró", SAME: "= igual", NA: "."}
 
 
 def _table(headers: List[str], rows: List[List[str]], color: bool, color_cols=()) -> str:
@@ -243,16 +288,35 @@ def _table(headers: List[str], rows: List[List[str]], color: bool, color_cols=()
     return "\n".join(out)
 
 
+def _compare_console(a: Analysis, color: bool) -> List[str]:
+    v = compare_view(a)
+    L = ["\n COMPARACIÓN: %s → %s" % (v["old"], v["new"]), "  " + v["summary"]]
+    if v["rows"]:
+        ncol = len(v["heads"])
+        L.append(_table(v["heads"], [r["cells"] for r in v["rows"]], color, color_cols=tuple(range(ncol - (2 if v["multi"] else 1), ncol))))
+    d = a.diff()
+    if d:
+        L.append("\n CAMBIOS EN HALLAZGOS (%s → %s)" % (v["old"], v["new"]))
+        for name, lab, hint in _DIFF_GROUPS:
+            if d[name]:
+                L.append("  %s (%d) · %s:" % (lab, len(d[name]), hint))
+                L += ["    - [%s] %s" % (f.severity, f.title) for f in d[name]]
+    return L
+
+
 def render_console(a: Analysis, color: bool = True, unicode: bool = True) -> str:
-    trend_txt = _TREND_TXT if unicode else _TREND_ASCII
     L: List[str] = []
     L.append("=" * 78)
-    L.append(" ANÁLISIS DE PIPELINE — %d ejecución(es)" % len(a.runs))
+    L.append(" %s — %d ejecución(es)" % ("COMPARACIÓN DE PIPELINE" if a.compare_only else "ANÁLISIS DE PIPELINE", len(a.runs)))
     L.append("=" * 78)
     for r in a.runs:
         meta = r.metrics["meta"]
         L.append(" %s %-16s %-14s %s  (%s min)  %s" % ("•" if unicode else "*", r.label, meta.get("provider_label", ""), meta.get("start") or "",
                                                  round((meta.get("duration_s") or 0) / 60, 1), short_origin(meta["file"])))
+    if a.compare_only:
+        L += _compare_console(a, color)
+        L.append("\n" + ("%s · pipeline-analyzer %s" % (BRAND, __version__)).rjust(78))
+        return "\n".join(L)
     L.append("")
     L.append(" VEREDICTO (última ejecución): " + a.verdict())
     L.append("")
@@ -268,20 +332,7 @@ def render_console(a: Analysis, color: bool = True, unicode: bool = True) -> str
         L += [" · " + n for n in cx["notes"]]
 
     if len(a.runs) > 1:
-        L.append("\n COMPARATIVA")
-        rows = a.comparison()
-        headers = ["Métrica"] + [r.label for r in a.runs] + ["vs anterior", "vs primera"]
-        L.append(_table(headers, [[row["label"]] + [_fmt(v) for v in row["values"]] +
-                                  [trend_txt[row["trend_prev"]], trend_txt[row["trend_first"]]] for row in rows],
-                        color, color_cols=(len(headers) - 2, len(headers) - 1)))
-        d = a.diff()
-        if d:
-            L.append("\n CAMBIOS EN HALLAZGOS (%s → %s)" % (a.runs[-2].label, a.runs[-1].label))
-            for name, lab in (("resolved", "Resueltos"), ("unverified", "No verificables (herramienta no ejecutada)"),
-                              ("new", "Nuevos"), ("persistent", "Persisten")):
-                L.append("  %s (%d):" % (lab, len(d[name])))
-                for f in d[name]:
-                    L.append("    - [%s] %s" % (f.severity, f.title))
+        L += _compare_console(a, color)
 
     pmap = a.pipeline_map()
     L.append("\n PLAN DE ACCIÓN: qué corregir para pasar (prioridad)")
@@ -336,13 +387,38 @@ def _finding_console(f: Finding, color: bool, pmap: Optional[Dict[str, Finding]]
 # ====================================================================== Markdown
 
 _SEV_MD = {"CRITICAL": "🔴 CRITICAL", "HIGH": "🟠 HIGH", "MEDIUM": "🟡 MEDIUM", "LOW": "🔵 LOW", "INFO": "⚪ INFO"}
-_TREND_MD = {IMPROVED: "✅ mejoró", WORSE: "🔴 empeoró", SAME: "➖ igual", NA: "·"}
+_KIND_MD = {"improved": "✅ ", "worse": "🔴 ", "changed": "🔸 ", "same": ""}
+_DIFF_MD = {"resolved": "✅", "new": "🆕", "persistent": "⏳", "unverified": "❔"}
 _CHECK_MD = {"OK": "✅ OK", "ALERTA": "⚠️ ALERTA", "N/D": "· N/D", "INFO": "ℹ️ INFO"}
 _STATUS_MD = {"OK": "✅ OK", "PASO": "✅ OK", "FALLO": "❌ FALLO", "NO EJECUTADO": "⚠️ NO EJECUTADO", "ALERTA": "⚠️ ALERTA"}
 
 
 def _md_escape(s: Any) -> str:
     return str(s).replace("|", "\\|").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _compare_md(a: Analysis) -> List[str]:
+    v = compare_view(a)
+    L = ["", "## Comparación: %s → %s" % (v["old"], v["new"]), "", "**%s**" % v["summary"]]
+    if v["rows"]:
+        L += ["", "| " + " | ".join(v["heads"]) + " |", "|---|" + "---|" * (len(v["heads"]) - 1)]
+        for r in v["rows"]:
+            cells = [_md_escape(c) for c in r["cells"]]
+            k = 2 if v["multi"] else 1
+            cells[-k] = _KIND_MD[r["kind"]] + cells[-k]
+            if v["multi"]:
+                cells[-1] = _KIND_MD[r["kind_first"]] + cells[-1]
+            L.append("| " + " | ".join(cells) + " |")
+    d = a.diff()
+    if d:
+        L += ["", "### Cambios en hallazgos (%s → %s)" % (v["old"], v["new"])]
+        for name, lab, hint in _DIFF_GROUPS:
+            if d[name]:
+                L += ["", "**%s %s (%d)** — %s" % (_DIFF_MD[name], lab, len(d[name]), hint), ""]
+                L += ["- %s — %s" % (_SEV_MD[f.severity], _md_escape(f.title)) for f in d[name]]
+        if not any(d.values()):
+            L += ["", "_Sin hallazgos en ninguna de las dos ejecuciones._"]
+    return L
 
 
 def render_markdown(a: Analysis) -> str:
@@ -362,6 +438,10 @@ def render_markdown(a: Analysis) -> str:
                                                           round((mt.get("duration_s") or 0) / 60, 1), mt.get("pull_request") or "-",
                                                           str(mt.get("sources", 1)) + att, short_origin(mt["file"])))
     L.append("")
+    if a.compare_only:
+        L += _compare_md(a)
+        L.append("")
+        return "\n".join(L)
     L.append("## Resumen — %s" % a.last.label)
     L.append("")
     L.append("**Veredicto:** " + a.verdict())
@@ -378,27 +458,7 @@ def render_markdown(a: Analysis) -> str:
         L += CV.findings_md(a.tool_reports["cxone_pdf"], False)
 
     if len(a.runs) > 1:
-        L.append("")
-        L.append("## Comparativa entre ejecuciones")
-        L.append("")
-        L.append("| Métrica | " + " | ".join(r.label for r in a.runs) + " | vs anterior | vs primera |")
-        L.append("|---|" + "---|" * (len(a.runs) + 2))
-        for row in a.comparison():
-            L.append("| %s | %s | %s | %s |" % (row["label"], " | ".join(_md_escape(_fmt(v)) for v in row["values"]),
-                                              _TREND_MD[row["trend_prev"]], _TREND_MD[row["trend_first"]]))
-        d = a.diff()
-        if d:
-            L.append("")
-            L.append("### Cambios en hallazgos (%s → %s)" % (a.runs[-2].label, a.runs[-1].label))
-            for name, lab in (("resolved", "✅ Resueltos"), ("unverified", "❔ No verificables (herramienta no ejecutada)"),
-                              ("new", "🆕 Nuevos"), ("persistent", "⏳ Persisten")):
-                L.append("")
-                L.append("**%s (%d)**" % (lab, len(d[name])))
-                L.append("")
-                for f in d[name]:
-                    L.append("- %s — %s" % (_SEV_MD[f.severity], _md_escape(f.title)))
-                if not d[name]:
-                    L.append("- _ninguno_")
+        L += _compare_md(a)
 
     L.append("")
     L.append("## Plan de acción: qué corregir para pasar")
@@ -481,16 +541,18 @@ def _finding_md(f: Finding, pmap: Optional[Dict[str, Finding]] = None, anchor: b
 # ====================================================================== HTML
 
 _CSS = TH.TOKENS + CV.CSS_VARS + CV.CSS + """
-main{min-width:0}h1{margin:0}h2{font-size:22px;line-height:1.25;font-weight:650;letter-spacing:-.01em;margin:64px 0 18px}h3{font-size:17px;margin:34px 0 12px}
+main{min-width:0}h1{margin:0}h2{font-size:22px;line-height:1.25;font-weight:700;letter-spacing:-.015em;margin:64px 0 18px}h3{font-size:17px;margin:34px 0 12px}
 .sub{color:var(--muted);margin:0 0 24px;max-width:78ch}p{max-width:78ch}
 .shell{display:grid;grid-template-columns:232px minmax(0,1fr);gap:clamp(28px,5vw,72px);max-width:1360px;margin:0 auto;padding:clamp(16px,3vw,44px)}
 .rail{position:sticky;top:28px;align-self:start;max-height:calc(100vh - 56px);overflow:auto;padding-bottom:16px}
-.rail .app{font-weight:650;font-size:15px;margin:0 10px 14px}.rail a{display:flex;gap:11px;align-items:center;padding:7px 10px;border-radius:8px;color:var(--fg);text-decoration:none;font-size:14px;line-height:1.3}
-.rail a:hover{background:var(--code)}.rail a i{flex:none;width:8px;height:8px;border-radius:50%;background:var(--c,var(--border))}
+.rail .app{font-family:var(--display);font-weight:700;font-size:16px;letter-spacing:-.01em;margin:0 10px 12px}.rail a{display:flex;gap:11px;align-items:center;padding:7px 10px;border-radius:var(--r2);color:var(--fg);text-decoration:none;font-size:14px;line-height:1.3;transition:background .12s}
+.rail .hist{margin-bottom:18px;font-weight:600;background:var(--info);color:#fff;padding:9px 12px}.rail .hist i{background:#fff}.rail .hist:hover{background:var(--info);filter:brightness(1.08)}
+@media (prefers-color-scheme:dark){.rail .hist{color:#16213e}.rail .hist i{background:#16213e}}
+.rail a:hover{background:var(--code)}.rail a.on{background:var(--code);font-weight:600}.rail a i{flex:none;width:8px;height:8px;border-radius:50%;background:var(--c,var(--border))}
 .rail .ok{--c:var(--ok);color:inherit}.rail .bad{--c:var(--bad);color:inherit}.rail .warn{--c:var(--warn);color:inherit}
-.mast{padding:6px 0 8px}.mast .kick{color:var(--muted);font-size:13px;margin:0 0 10px}
-.mast h1{color:var(--fg);font-size:clamp(25px,3.4vw,34px);line-height:1.2;font-weight:700;letter-spacing:-.02em;display:flex;gap:14px;align-items:flex-start;max-width:30ch}
-.mast h1::before{content:"";flex:none;width:12px;height:12px;border-radius:50%;margin-top:.5em;background:var(--c)}
+.mast{padding:6px 0 8px}.mast .kick{color:var(--muted);font-size:13px;margin:0 0 12px}
+.mast h1{color:var(--fg);font-size:clamp(26px,3.6vw,38px);line-height:1.15;font-weight:750;letter-spacing:-.025em;display:flex;gap:16px;align-items:flex-start;max-width:30ch}
+.mast h1::before{content:"";flex:none;width:14px;height:14px;border-radius:50%;margin-top:.42em;background:var(--c);box-shadow:0 0 0 5px color-mix(in srgb,var(--c) 18%,transparent)}
 .mast.m-ok{--c:var(--ok)}.mast.m-bad{--c:var(--bad)}
 .strip{display:flex;overflow-x:auto;padding:30px 2px 6px;margin:22px 0 14px}
 .node{flex:1 0 96px;position:relative;text-align:center;padding:30px 4px 0;min-width:96px}
@@ -500,15 +562,19 @@ display:grid;place-items:center;font-style:normal;z-index:1}.node i svg{display:
 .node b{display:block;font-size:13px;font-weight:600;line-height:1.25}.node small{display:block;font-size:12px;color:var(--muted);margin-top:2px;line-height:1.3}
 .n-ok{--c:var(--ok)}.n-bad{--c:var(--bad)}.n-warn{--c:var(--warn)}.n-na{--c:#8a92a2}
 .counts{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0 0}
-.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:22px 26px;margin:0 0 10px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--r1);padding:22px 26px;margin:0 0 10px}
 .ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}
 .tbl{width:100%;overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:14px;table-layout:auto}td code{white-space:normal}
 th,td{padding:11px 14px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}td{overflow-wrap:anywhere;word-break:break-word}td:last-child{min-width:120px}
-th{font-size:13px;color:var(--muted);font-weight:600}td.num{font-variant-numeric:tabular-nums}tr:last-child>td{border-bottom:0}
+th{font-size:13px;color:var(--muted);font-weight:600}td.num{font-variant-numeric:tabular-nums}tr:last-child>td{border-bottom:0}tbody tr:hover>td,table tr:hover>td{background:color-mix(in srgb,var(--code) 55%,transparent)}
+tr[class*=k-]>td:first-child{box-shadow:inset 3px 0 var(--k);font-weight:600;padding-left:16px}tr.k-worse{--k:var(--bad)}tr.k-improved{--k:var(--ok)}tr.k-changed{--k:var(--info)}tr.k-same{--k:var(--line)}tr.k-same>td{color:var(--muted)}tr.k-same>td:first-child{font-weight:500}
+.cmpbar{display:flex;height:14px;border-radius:99px;overflow:hidden;gap:3px;margin:26px 0 12px;max-width:560px}.cmpbar>span{display:block;min-width:8px;background:var(--k)}
+.legend{display:flex;flex-wrap:wrap;gap:8px 22px;font-size:14px;color:var(--muted);margin:0}.legend span{display:inline-flex;gap:8px;align-items:center}.legend i{width:10px;height:10px;border-radius:3px;background:var(--k)}.legend b{color:var(--fg);font-size:16px}
+.k-worse{--k:var(--bad)}.k-improved{--k:var(--ok)}.k-changed{--k:var(--info)}.k-same{--k:var(--line)}
 .pill{display:inline-block;padding:1px 9px;border-radius:99px;font-size:12px;font-weight:600;white-space:nowrap}
 .p-ok{background:var(--okbg);color:var(--ok)}.p-bad{background:var(--badbg);color:var(--bad)}.p-warn{background:var(--warnbg);color:var(--warn)}.p-info{background:var(--infobg);color:var(--info)}.p-na{color:var(--muted)}
 .sev-CRITICAL,.sev-HIGH{background:var(--badbg);color:var(--bad)}.sev-MEDIUM{background:var(--warnbg);color:var(--warn)}.sev-LOW,.sev-INFO{background:var(--infobg);color:var(--info)}
-details{background:var(--card);border:1px solid var(--border);border-radius:10px;margin:12px 0}summary{cursor:pointer;padding:14px 18px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+details{background:var(--card);border:1px solid var(--border);border-radius:var(--r2);margin:12px 0}summary{cursor:pointer;padding:14px 18px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 summary .t{font-weight:600;flex:1;min-width:min(100%,220px)}summary .c{color:var(--muted);font-size:13px}
 .fb{padding:4px 24px 22px}.fb p{margin:12px 0}.fb b{display:block;margin:18px 0 6px}.fb ul,.fb ol{margin:8px 0 12px;padding-left:22px}.fb li{margin:6px 0}
 pre{background:var(--code);padding:12px 14px;border-radius:8px;overflow-x:auto;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;max-width:100%;margin:10px 0}
@@ -523,7 +589,7 @@ details:target{outline:2px solid var(--info)}details,h2{scroll-margin-top:16px}
 .done{background:var(--okbg);color:var(--ok);border-radius:10px;padding:10px 14px;margin:20px 0 0}.hint{background:var(--infobg);border-radius:10px;padding:10px 14px;margin:14px 0;font-size:14px}
 .tooldet{background:var(--bg);margin:16px 0}.tooldet .tbl{padding:0 12px 10px}.tooldet details{margin:6px 12px}
 .warnbox{background:var(--warnbg);color:var(--warn);border:1px solid var(--warn);border-radius:10px;padding:12px 16px;margin:0 0 22px;font-weight:600}
-.sec{background:none;border:0;border-top:1px solid var(--border);border-radius:0;margin:0}.sec>summary{padding:22px 4px;list-style:none;gap:14px}
+.sec{background:none;border:0;border-top:1px solid var(--border);border-radius:0;margin:0}.sec>summary h2{font-weight:700}.sec>summary{padding:22px 4px;list-style:none;gap:14px}
 .sec>summary::-webkit-details-marker{display:none}.sec>summary::before{content:'▸';color:var(--muted);font-size:15px;width:14px;transition:transform .15s}
 .sec[open]>summary::before{transform:rotate(90deg)}.sec>summary:hover h2{color:var(--info)}.sec>summary h2{margin:0;flex:none;font-size:18px}
 .sec .sc{color:var(--muted);font-size:13px;margin-left:auto}.secb{padding:0 4px 32px}.secb>details:first-child{margin-top:0}
@@ -531,10 +597,43 @@ footer{color:var(--muted);font-size:13px;margin-top:64px}
 .brand{position:fixed;right:14px;bottom:8px;font-size:12px;font-weight:600;color:var(--muted);opacity:.55;pointer-events:none}
 @media (max-width:1000px){.shell{grid-template-columns:minmax(0,1fr);gap:18px}.rail{position:static;max-height:none;padding:0 0 4px;overflow-x:auto}.rail nav{display:flex;gap:6px}
 .rail .app{display:none}.rail a{white-space:nowrap;border:1px solid var(--border);border-radius:99px;background:var(--card)}h2{margin-top:44px}.step{padding-left:12px;gap:12px}}
+@media (max-width:640px){.card{padding:14px 12px}th,td{padding:9px 8px}tr[class*=k-]>td:first-child{padding-left:10px}}
 @media print{.brand{position:static;text-align:right}.rail{display:none}.shell{display:block}}
 """
 
-_TREND_HTML = {IMPROVED: ("p-ok", "▲ mejoró"), WORSE: ("p-bad", "▼ empeoró"), SAME: ("p-na", "= igual"), NA: ("p-na", "·")}
+_KIND_CLS = {"improved": "p-ok", "worse": "p-bad", "changed": "p-info", "same": "p-na"}
+_KIND_MARK = {"improved": "▲ ", "worse": "▼ ", "changed": "", "same": ""}
+
+
+def _compare_html(a: Analysis, summary: bool = True) -> str:
+    """Tabla «Antes · Ahora · Cambio» con todas las métricas (lo que cambió primero) y el detalle de hallazgos."""
+    v = compare_view(a)
+    body = ["<p class='sub'><b>%s</b></p>" % _e(v["summary"])] if summary else []
+    if v["rows"]:
+        body.append("<div class='card tbl'><table><tr>%s</tr>" % "".join("<th>%s</th>" % _e(h) for h in v["heads"]))
+        for r in v["rows"]:
+            cells = r["cells"]
+            tail = 2 if v["multi"] else 1
+            kinds = [r["kind"], r["kind_first"]][:tail] if v["multi"] else [r["kind"]]
+            body.append("<tr class='k-%s'><td>%s</td>" % (r["kind"], _e(cells[0])))
+            body += ["<td class='num'>%s</td>" % _e(c) for c in cells[1:-tail]]
+            for c, k in zip(cells[-tail:], kinds):
+                body.append("<td><span class='pill %s'>%s%s</span></td>" % (_KIND_CLS[k], _KIND_MARK[k], _e(c)))
+            body.append("</tr>")
+        body.append("</table></div>")
+    d = a.diff()
+    if d:
+        body.append("<h3>Cambios en hallazgos (%s → %s)</h3><div class='diffcols'>" % (_e(v["old"]), _e(v["new"])))
+        for name, lab, hint in _DIFF_GROUPS:
+            cls = {"resolved": "ok", "new": "bad"}.get(name, "warn")
+            body.append("<div class='card'><b class='%s'>%s (%d)</b><div class='sub'>%s</div><ul>" % (cls, lab, len(d[name]), hint))
+            body += ["<li><span class='pill sev-%s'>%s</span> %s <span class='sub'>· %s</span></li>"
+                     % (f.severity, f.severity, _e(f.title), _e(f.category)) for f in d[name]]
+            if not d[name]:
+                body.append("<li class='p-na'>ninguno</li>")
+            body.append("</ul></div>")
+        body.append("</div>")
+    return "".join(body)
 
 
 def _e(s: Any) -> str:
@@ -553,6 +652,7 @@ def _glyph(d: str) -> str:
 
 _G_OK, _G_BAD = _glyph("M2.6 6.4l2.4 2.4 4.4-5"), _glyph("M3 3l6 6M9 3l-6 6")
 _G_WARN, _G_NA = _glyph("M6 2.8v3.6M6 9.1v.1"), _glyph("M3 6h6")
+_HISTORY = "<a href='../historial-reportes.html' class='hist' title='Abre la lista de todos los análisis guardados'><i></i>Historial de reportes</a>"
 _NODE = {"OK": ("ok", _G_OK), "PASO": ("ok", _G_OK), "FALLO": ("bad", _G_BAD), "ALERTA": ("warn", _G_WARN)}
 
 
@@ -584,17 +684,72 @@ def _rail_html(a: Analysis) -> str:
         items.append(("pipeline-recs", "Recomendaciones del pipeline", "warn" if any(f.blocks for f in a.pipeline_findings()) else ""))
     if a.checklist():
         items.append(("validaciones", "Validaciones", ""))
-    return ("<aside class='rail'><nav aria-label='Secciones'><div class='app'>Análisis de pipeline</div>%s</nav></aside>"
-            % "".join("<a href='#%s' class='%s'><i></i>%s</a>" % (h, c, _e(t)) for h, t, c in items))
+    return ("<aside class='rail'><nav aria-label='Secciones'>%s<div class='app'>Análisis de pipeline</div>%s</nav></aside>"
+            % (_HISTORY, "".join("<a href='#%s' class='%s'><i></i>%s</a>" % (h, c, _e(t)) for h, t, c in items)))
+
+
+def _runs_html(a: Analysis, full: bool) -> List[str]:
+    body = ["<div class='card tbl'><table><tr><th>Etiqueta</th><th>Proveedor</th><th>Inicio</th>"
+            "<th>Duración</th><th>PR</th><th>Archivos</th><th>Origen</th></tr>"]
+    for r in a.runs:
+        mt = r.metrics["meta"]
+        att = " · intento %s/%s" % (mt["attempt"], mt["attempts"]) if mt.get("attempts", 1) > 1 else ""
+        body.append("<tr><td>%s</td><td>%s</td><td>%s</td><td class='num'>%s min</td><td>%s</td><td class='num'>%s%s</td><td><code>%s</code></td></tr>"
+                    % (_e(r.label), _e(mt.get("provider_label", "-")), _e(mt.get("start") or "-"),
+                       round((mt.get("duration_s") or 0) / 60, 1), _e(mt.get("pull_request") or "-"),
+                       mt.get("sources", 1), _e(att), _e(mt["file"] if full else short_origin(mt["file"]))))
+    body.append("</table></div>")
+    return body
+
+
+def _compare_headline(a: Analysis, v: Dict[str, Any]) -> str:
+    """Titular en una frase; los conteos van en la barra y su leyenda."""
+    g = v["groups"]
+    new, old = v["new"], v["old"]
+    if g["worse"] and g["improved"]:
+        return "%s mejoró en unas cosas y empeoró en otras" % new
+    if g["worse"]:
+        return "%s está peor que %s" % (new, old)
+    if g["improved"]:
+        return "%s está mejor que %s" % (new, old)
+    return "Sin cambios relevantes entre %s y %s" % (old, new)
+
+
+def _render_compare_html(a: Analysis, full: bool) -> str:
+    """«Solo comparación»: veredicto de la comparación, tabla viejo → nuevo, detalle de hallazgos y las ejecuciones comparadas."""
+    ok = a.is_ok()
+    v = compare_view(a)
+    H = ["<!doctype html><html lang='es'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+         "<title>Comparación de pipeline%s</title><style>%s</style></head><body><div class='shell'>" % (" (completo)" if full else "", _CSS)]
+    items = [("resumen", "Resumen"), ("comparativa", "Qué cambió"), ("ejecuciones", "Ejecuciones")]
+    H.append("<aside class='rail'><nav aria-label='Secciones'>%s<div class='app'>Comparación de pipeline</div>%s</nav></aside>"
+             % (_HISTORY, "".join("<a href='#%s'><i></i>%s</a>" % (h, _e(t)) for h, t in items)))
+    H.append("<main>")
+    H.append("<header class='mast m-%s' id='resumen'><p class='kick'>Solo comparación · %s → %s · pipeline-analyzer %s</p><h1>%s</h1>"
+             % ("ok" if ok else "bad", _e(v["old"]), _e(v["new"]), __version__, _e(_compare_headline(a, v))))
+    parts = [(k, w) for k, w in (("worse", "empeoraron"), ("improved", "mejoraron"), ("changed", "cambiaron"), ("same", "sin cambios"))
+             if v["groups"][k]]
+    H.append("<div class='cmpbar' role='img' aria-label='%s'>%s</div><p class='legend'>%s</p></header>"
+             % (_e(v["summary"]), "".join("<span class='k-%s' style='flex:%d' title='%d %s'></span>" % (k, len(v["groups"][k]), len(v["groups"][k]), w)
+                                          for k, w in parts),
+                "".join("<span class='k-%s'><i></i><b>%d</b> %s</span>" % (k, len(v["groups"][k]), w) for k, w in parts)))
+    H.append("<h2 id='comparativa'>Qué cambió de %s a %s</h2>" % (_e(v["old"]), _e(v["new"])))
+    H.append(_compare_html(a, summary=False))   # el resumen ya está en el encabezado
+    H.append(_sec("Ejecuciones comparadas", "".join(_runs_html(a, full)), "ejecuciones", "%d · %s" % (len(a.runs), a.last.metrics["meta"].get("provider_label", ""))))
+    H.append("<footer>%s · pipeline-analyzer %s</footer></main></div><div class='brand' aria-hidden='true'>%s</div><script>%s</script></body></html>"
+             % (BRAND, __version__, BRAND, _JS))
+    return "".join(H)
 
 
 def render_html(a: Analysis, full: bool = False) -> str:
     """``full=True``: versión de uso local, con valores reales y evidencia completa (no compartir)."""
+    if a.compare_only:
+        return _render_compare_html(a, full)
     H: List[str] = []
     H.append("<!doctype html><html lang='es'><head><meta charset='utf-8'>"
              "<meta name='viewport' content='width=device-width,initial-scale=1'>"
              "<title>Reporte de pipeline%s</title><style>%s</style></head><body><div class='shell'>" % (" (completo)" if full else "", _CSS))
-    ok = a.verdict().startswith("Todos")
+    ok = a.is_ok()
     pmap = a.pipeline_map()
     H.append(_rail_html(a))
     H.append("<main>")
@@ -640,40 +795,10 @@ def render_html(a: Analysis, full: bool = False) -> str:
                   "%d hallazgo(s)%s" % (len(mine), " + %d del pom" % len(a.pom_findings) if a.pom_findings else "")))
 
     if len(a.runs) > 1:
-        body = ["<div class='card tbl'><table><tr><th>Métrica</th>"]
-        body += ["<th>%s</th>" % _e(r.label) for r in a.runs]
-        body.append("<th>vs anterior</th><th>vs primera</th></tr>")
-        for row in a.comparison():
-            body.append("<tr><td>%s</td>" % _e(row["label"]))
-            body += ["<td class='num'>%s</td>" % _e(_fmt(v)) for v in row["values"]]
-            for k in ("trend_prev", "trend_first"):
-                cls, txt = _TREND_HTML[row[k]]
-                body.append("<td><span class='pill %s'>%s</span></td>" % (cls, txt))
-            body.append("</tr>")
-        body.append("</table></div>")
-        d = a.diff()
-        if d:
-            body.append("<h3>Cambios en hallazgos (%s → %s)</h3><div class='diffcols'>" % (_e(a.runs[-2].label), _e(a.runs[-1].label)))
-            for name, lab, cls in (("resolved", "Resueltos", "ok"), ("unverified", "No verificables", "warn"),
-                                   ("new", "Nuevos", "bad"), ("persistent", "Persisten", "warn")):
-                body.append("<div class='card'><b class='%s'>%s (%d)</b><ul>" % (cls, lab, len(d[name])))
-                body += ["<li><span class='pill sev-%s'>%s</span> %s</li>" % (f.severity, f.severity, _e(f.title)) for f in d[name]]
-                if not d[name]:
-                    body.append("<li class='p-na'>ninguno</li>")
-                body.append("</ul></div>")
-            body.append("</div>")
-        H.append(_sec("Comparativa entre ejecuciones", "".join(body), "comparativa", "%d ejecuciones" % len(a.runs)))
+        H.append(_sec("Comparación: %s → %s" % (a.runs[-2].label, a.runs[-1].label), _compare_html(a), "comparativa",
+                      compare_view(a)["summary"]))
 
-    body = ["<div class='card tbl'><table><tr><th>Etiqueta</th><th>Proveedor</th><th>Inicio</th>"
-            "<th>Duración</th><th>PR</th><th>Archivos</th><th>Origen</th></tr>"]
-    for r in a.runs:
-        mt = r.metrics["meta"]
-        att = " · intento %s/%s" % (mt["attempt"], mt["attempts"]) if mt.get("attempts", 1) > 1 else ""
-        body.append("<tr><td>%s</td><td>%s</td><td>%s</td><td class='num'>%s min</td><td>%s</td><td class='num'>%s%s</td><td><code>%s</code></td></tr>"
-                    % (_e(r.label), _e(mt.get("provider_label", "-")), _e(mt.get("start") or "-"),
-                       round((mt.get("duration_s") or 0) / 60, 1), _e(mt.get("pull_request") or "-"),
-                       mt.get("sources", 1), _e(att), _e(mt["file"] if full else short_origin(mt["file"]))))
-    body.append("</table></div>")
+    body = _runs_html(a, full)
     H.append(_sec("Ejecuciones analizadas", "".join(body), "ejecuciones", "%d · %s" % (len(a.runs), a.last.metrics["meta"].get("provider_label", ""))))
     H.append(_review_html(a))
 
@@ -902,7 +1027,11 @@ def _chip(f: Finding) -> str:
 _JS = ("function o(){var h=location.hash.slice(1),t=h&&document.getElementById(h),e=t;"
        "while(e){if(e.tagName=='DETAILS')e.open=true;e=e.parentElement}if(t&&t.scrollIntoView)t.scrollIntoView()}"
        "addEventListener('hashchange',o);o();"
-       "addEventListener('beforeprint',function(){document.querySelectorAll('details.sec').forEach(function(d){d.open=true})})")
+       "addEventListener('beforeprint',function(){document.querySelectorAll('details.sec').forEach(function(d){d.open=true})});"
+       "(function(){var L=[].slice.call(document.querySelectorAll('.rail a[href^=\"#\"]'));if(!L.length)return;"
+       "function s(){var c=null;L.forEach(function(a){var t=document.getElementById(a.getAttribute('href').slice(1));if(t&&t.getBoundingClientRect().top<150)c=a});"
+       "L.forEach(function(a){a.classList.toggle('on',a===c);if(a===c)a.setAttribute('aria-current','true');else a.removeAttribute('aria-current')})}"
+       "addEventListener('scroll',s,{passive:true});s()})()")
 
 
 def _finding_html(f: Finding, full: bool = False, pmap: Optional[Dict[str, Finding]] = None, anchor: bool = False) -> str:
@@ -931,7 +1060,6 @@ def _finding_html(f: Finding, full: bool = False, pmap: Optional[Dict[str, Findi
 
 _SEV_COLOR = {"CRITICAL": RED, "HIGH": RED, "MEDIUM": AMBER, "LOW": BLUE, "INFO": BLUE}
 _STATE_COLOR = {"OK": GREEN, "PASO": GREEN, "FALLO": RED, "ALERTA": RED, "NO EJECUTADO": AMBER, "N/D": AMBER, "INFO": BLUE}
-_TREND_TXT = {IMPROVED: "mejoró", WORSE: "empeoró", SAME: "igual", NA: "-"}
 
 
 def _finding_pdf(d: PdfDoc, f: Finding, full: bool, pmap: Dict[str, Finding], anchor: bool = False) -> None:
@@ -957,16 +1085,55 @@ def _finding_pdf(d: PdfDoc, f: Finding, full: bool, pmap: Dict[str, Finding], an
         d.code(f.snippet)
 
 
+def _compare_pdf(d: PdfDoc, a: Analysis) -> None:
+    v = compare_view(a)
+    d.heading("Comparación: %s -> %s" % (v["old"], v["new"]), 1, "sec-comparativa")
+    d.para(v["summary"], bold=True)
+    if v["rows"]:
+        tcol = {"Mejoró": GREEN, "Empeoró": RED}
+        tail = 2 if v["multi"] else 1
+        d.table(v["heads"], [r["cells"] for r in v["rows"]],
+                lambda i, t: tcol.get(t.split(" (")[0]) if i >= len(v["heads"]) - tail else None)
+    diff = a.diff()
+    if diff:
+        d.heading("Cambios en hallazgos (%s -> %s)" % (v["old"], v["new"]), 2)
+        for name, lab, hint in _DIFF_GROUPS:
+            col = GREEN if name == "resolved" else RED if name == "new" else AMBER
+            d.para("%s (%d) - %s" % (lab, len(diff[name]), hint), col, True, size=9.5)
+            for f in diff[name]:
+                d.bullet("[%s] %s" % (f.severity, f.title))
+
+
+def _runs_pdf(d: PdfDoc, a: Analysis) -> None:
+    d.heading("Ejecuciones analizadas", 1, "sec-ejecuciones")
+    rows = []
+    for r in a.runs:
+        mt = r.metrics["meta"]
+        att = " (intento %s/%s)" % (mt["attempt"], mt["attempts"]) if mt.get("attempts", 1) > 1 else ""
+        rows.append([r.label, mt.get("provider_label", "-"), mt.get("start") or "-", "%s min" % round((mt.get("duration_s") or 0) / 60, 1),
+                     mt.get("pull_request") or "-", "%s%s" % (mt.get("sources", 1), att), short_origin(mt["file"])])
+    d.table(["Etiqueta", "Proveedor", "Inicio", "Duración", "PR", "Archivos", "Origen"], rows)
+
+
 def _build_pdf(a: Analysis, full: bool, scrub: Optional[Callable[[str], str]], toc: List[tuple]) -> PdfDoc:
     title = "Reporte de pipeline" + (" (completo)" if full else "")
     d = PdfDoc(title, footer="CONFIDENCIAL - NO COMPARTIR" if full else "", footer_color=RED, scrub=scrub)
-    ok = a.verdict().startswith("Todos")
-    d.header_band("Reporte de análisis de pipeline" + (" · versión completa" if full else ""),
+    ok = a.is_ok()
+    d.header_band(("Comparación de pipeline" if a.compare_only else "Reporte de análisis de pipeline") + (" · versión completa" if full else ""),
                   "%d ejecución(es) analizadas · %s · pipeline-analyzer %s"
                   % (len(a.runs), datetime.now().strftime("%Y-%m-%d %H:%M"), __version__), RED if full else BAND)
     if full:
         d.banner("PRECAUCIÓN - INFORMACIÓN CONFIDENCIAL. Este documento contiene valores reales (secretos, credenciales, hosts y correos) y evidencia sin enmascarar. Trátalo como material sensible: no lo compartas, reenvíes ni adjuntes a tickets o chats; si se expone por error, rota las credenciales que aparezcan en él.")
     pmap = a.pipeline_map()
+
+    if a.compare_only:
+        d.heading("Resumen", 1, "sec-resumen")
+        d.verdict(a.verdict(), ok)
+        if toc:
+            d.toc(toc)
+        _compare_pdf(d, a)
+        _runs_pdf(d, a)
+        return d
 
     d.heading("Resumen - %s" % a.last.label, 1, "sec-resumen")
     d.verdict(a.verdict(), ok)
@@ -986,14 +1153,7 @@ def _build_pdf(a: Analysis, full: bool, scrub: Optional[Callable[[str], str]], t
     if toc:
         d.toc(toc)
 
-    d.heading("Ejecuciones analizadas", 1, "sec-ejecuciones")
-    rows = []
-    for r in a.runs:
-        mt = r.metrics["meta"]
-        att = " (intento %s/%s)" % (mt["attempt"], mt["attempts"]) if mt.get("attempts", 1) > 1 else ""
-        rows.append([r.label, mt.get("provider_label", "-"), mt.get("start") or "-", "%s min" % round((mt.get("duration_s") or 0) / 60, 1),
-                     mt.get("pull_request") or "-", "%s%s" % (mt.get("sources", 1), att), short_origin(mt["file"])])
-    d.table(["Etiqueta", "Proveedor", "Inicio", "Duración", "PR", "Archivos", "Origen"], rows)
+    _runs_pdf(d, a)
 
     cx = a.cxone_summary()
     if cx:
@@ -1013,20 +1173,7 @@ def _build_pdf(a: Analysis, full: bool, scrub: Optional[Callable[[str], str]], t
             d.table(["Severidad", "Consulta / CVE", "Result.", "Solucion propuesta"], rows, lambda i, t: _SEV_COLOR.get(t) if i == 0 else None)
 
     if len(a.runs) > 1:
-        d.heading("Comparativa entre ejecuciones", 1, "sec-comparativa")
-        heads = ["Métrica"] + [r.label for r in a.runs] + ["vs anterior", "vs primera"]
-        trows = [[row["label"]] + [_fmt(v) for v in row["values"]] + [_TREND_TXT[row["trend_prev"]], _TREND_TXT[row["trend_first"]]]
-                 for row in a.comparison()]
-        tcol = {"mejoró": GREEN, "empeoró": RED}
-        d.table(heads, trows, lambda i, t: tcol.get(t) if i >= len(heads) - 2 else None)
-        diff = a.diff()
-        if diff:
-            d.heading("Cambios en hallazgos (%s -> %s)" % (a.runs[-2].label, a.runs[-1].label), 2)
-            for name, lab, col in (("resolved", "Resueltos", GREEN), ("unverified", "No verificables", AMBER),
-                                   ("new", "Nuevos", RED), ("persistent", "Persisten", AMBER)):
-                d.para("%s (%d)" % (lab, len(diff[name])), col, True, size=9.5)
-                for f in diff[name]:
-                    d.bullet("[%s] %s" % (f.severity, f.title))
+        _compare_pdf(d, a)
 
     d.heading("Plan de acción: qué corregir para pasar", 1, "sec-plan")
     plan = a.action_plan()

@@ -26,7 +26,8 @@ def write_summary(run_dir: Path, analysis, version: str = __version__) -> None:
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "version": version,
         "verdict": analysis.verdict(),
-        "ok": analysis.verdict().startswith("Todos"),
+        "ok": analysis.is_ok(),
+        "compare_only": analysis.compare_only,
         "labels": [r.label for r in analysis.runs],
         "provider": analysis.last.metrics["meta"].get("provider_label", ""),
         "counts": counts,
@@ -57,7 +58,7 @@ def render_index(base: Path) -> str:
         ok = r.get("ok")
         verdict = r.get("verdict")
         pill = ("<span class='pill p-na'>sin resumen</span>" if verdict is None else
-                "<span class='pill %s'>%s</span>" % ("p-ok" if ok else "p-bad", e(verdict)))
+                "<span class='pill v %s'>%s</span>" % ("p-ok" if ok else "p-bad", e(verdict)))
         counts = " ".join("<span class='pill sev-%s'>%s %d</span>" % (k, k, v) for k, v in
                           sorted((r.get("counts") or {}).items(), key=lambda kv: ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"].index(kv[0]))
                           if k in ("CRITICAL", "HIGH", "MEDIUM", "LOW"))
@@ -65,7 +66,7 @@ def render_index(base: Path) -> str:
         links = " ".join("<a class='file%s' href='%s/%s'%s>%s</a>" % (" local" if local else "", e(r["folder"], True), n,
                                                                       " title='Contiene valores reales: no compartir'" if local else "", e(label))
                          for n, label, local in r["files"])
-        extra = ""
+        extra = "<div><span class='pill p-info'>Solo comparación</span></div>" if r.get("compare_only") else ""
         if r.get("pipeline_blockers"):
             extra += "<div class='sub'>⚙ %d bloqueo(s) dependen del pipeline</div>" % r["pipeline_blockers"]
         rows.append("<tr data-q='%s'><td class='num'><b>%03d</b>%s</td><td class='date'>%s</td><td>%s%s</td><td>%s</td><td>%s%s</td><td class='files'>%s</td></tr>"
@@ -96,14 +97,15 @@ _JS = ("var q=document.getElementById('q');if(q){q.addEventListener('input',func
 
 _CSS = TH.TOKENS + """
 
-main{width:100%;padding:clamp(12px,2.5vw,40px) clamp(12px,3vw,48px) 60px}h1{font-size:26px;margin:0 0 4px}.sub{color:var(--muted);font-size:13px;margin:0 0 14px}
-#q{width:100%;max-width:520px;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--fg);font:inherit;margin:0 0 14px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:8px 12px}.tbl{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:14px}
+main{width:100%;max-width:1360px;margin:0 auto;padding:clamp(16px,3vw,44px) clamp(14px,3vw,48px) 60px}h1{font-size:clamp(26px,3.4vw,34px);letter-spacing:-.025em;font-weight:750;margin:0 0 6px}.sub{color:var(--muted);font-size:13px;margin:0 0 16px}
+#q{width:100%;max-width:520px;padding:10px 14px;border:1px solid var(--border);border-radius:99px;background:var(--card);color:var(--fg);font:inherit;margin:6px 0 18px}#q:focus{border-color:var(--info)}#q::placeholder{color:var(--muted);opacity:1}
+tr[data-q]:hover>td{background:color-mix(in srgb,var(--code) 55%,transparent)}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--r1);padding:8px 14px}.pill.v{white-space:normal;border-radius:12px;padding:3px 10px}.tbl{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:14px}
 th,td{padding:8px 10px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}th{font-size:13px;color:var(--muted);font-weight:600}
-th{overflow-wrap:normal;word-break:normal}td.num,td.date{white-space:nowrap}td.files{min-width:260px}.pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;font-weight:600;margin:1px 2px 1px 0}
+th{overflow-wrap:normal;word-break:normal}td.num,td.date{white-space:nowrap}td.files{min-width:260px}.pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;font-weight:600;margin:1px 2px 1px 0;white-space:nowrap}
 .p-ok{background:var(--okbg);color:var(--ok)}.p-bad{background:var(--badbg);color:var(--bad)}.p-info{background:var(--infobg);color:var(--info)}.p-na{color:var(--muted)}
 .sev-CRITICAL,.sev-HIGH{background:var(--badbg);color:var(--bad)}.sev-MEDIUM{background:var(--warnbg);color:var(--warn)}.sev-LOW{background:var(--infobg);color:var(--info)}
-.file{display:inline-block;border:1px solid var(--border);border-radius:6px;padding:1px 8px;margin:2px 4px 2px 0;text-decoration:none;color:var(--info);font-size:13px}
+.file{display:inline-block;border:1px solid var(--border);border-radius:99px;padding:2px 11px;margin:2px 4px 2px 0;text-decoration:none;color:var(--info);font-size:13px;font-weight:500}
 .brand{position:fixed;right:14px;bottom:8px;font-size:12px;font-weight:600;letter-spacing:.06em;color:var(--muted);opacity:.55;pointer-events:none}
 .file:hover{border-color:var(--info)}.file.local{color:var(--warn);border-color:var(--warn)}code{font-family:ui-monospace,Menlo,monospace}
 """

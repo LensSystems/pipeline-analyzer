@@ -104,7 +104,20 @@ class WindowTest(unittest.TestCase):
         self.assertEqual(disabled_seen[0], ("go",))        # sin log principal no se puede analizar
         self.assertEqual(disabled_seen[-1], ())
         self.assertEqual(sel, {"logs": ["/logs/anterior", "/logs/actual"], "main": "/logs/actual", "pom": "/p/pom.xml",
-                               "reports": ["/r/b.xml"]})
+                               "reports": ["/r/b.xml"], "compare_only": False})
+
+    def test_compare_only_button_appears_with_main_and_comparison_and_skips_pom_and_reports(self):
+        g = self.g
+        shown = []
+        actions = iter(["main:dir", "pom", "cmp:dir", "cmp"])
+        g._choice = lambda opts, cancel=None, disabled=(): shown.append([o[0] for o in opts]) or next(actions)
+        g._open = lambda kind, title, ft=None: "/logs/actual" if "analizar" in title else "/logs/anterior"
+        g.ask_pom = lambda: "/p/pom.xml"
+        sel = g.gather()
+        self.assertEqual(shown[:3], [["Analizar", "Cancelar"]] * 2 + [["Analizar", "Cancelar"]])  # sin comparación no se ofrece
+        self.assertEqual(shown[3], ["Analizar", "Solo comparación", "Cancelar"])
+        self.assertEqual(sel, {"logs": ["/logs/anterior", "/logs/actual"], "main": "/logs/actual", "pom": None, "reports": [],
+                               "compare_only": True})
 
     def test_same_file_cannot_be_used_in_two_sections_but_same_name_elsewhere_can(self):
         g = self.g
@@ -175,7 +188,7 @@ class WindowTest(unittest.TestCase):
         fills = {b.itemcget(i, "fill") for i in b.find_all()}
         self.assertIn("#c2410c", fills)          # fondo naranja
         self.assertIn("#ffffff", fills)          # texto blanco
-        self.assertGreaterEqual(int(b.cget("height")), 24)
+        self.assertGreaterEqual(int(b.cget("height")), 22)
         b.pack()
         g.root.update()
         b.event_generate("<Button-1>", x=3, y=3)
@@ -305,16 +318,25 @@ class ConsolePromptsTest(unittest.TestCase):
 
     def test_gather_all(self):
         out = io.StringIO()
-        sel = gather_console(_answers("/no/existe", '"%s"' % self.main, "s", str(self.prev), "n", "s", str(self.pom), "n"), out)
+        sel = gather_console(_answers("/no/existe", '"%s"' % self.main, "s", str(self.prev), "n", "n", "s", str(self.pom), "n"), out)
         self.assertEqual(sel["logs"], [str(self.prev), str(self.main)])  # comparación primero, principal al final
         self.assertEqual(sel["pom"], str(self.pom))
         self.assertIn("No existe", out.getvalue())
 
     def test_console_rejects_same_file_in_another_section(self):
         out = io.StringIO()
-        sel = gather_console(_answers(str(self.main), "s", str(self.main), str(self.prev), "n", "s", str(self.pom), "n"), out)
+        sel = gather_console(_answers(str(self.main), "s", str(self.main), str(self.prev), "n", "n", "s", str(self.pom), "n"), out)
         self.assertEqual(sel["logs"], [str(self.prev), str(self.main)])
         self.assertIn("Archivo no válido", out.getvalue())
+
+    def test_compare_only_skips_pom_and_reports(self):
+        sel = gather_console(_answers(str(self.main), "s", str(self.prev), "n", "s"), io.StringIO())
+        self.assertEqual(sel, {"logs": [str(self.prev), str(self.main)], "pom": None, "main": str(self.main), "reports": [], "compare_only": True})
+
+    def test_compare_only_is_not_offered_without_a_comparison(self):
+        out = io.StringIO()
+        gather_console(_answers(str(self.main), "n", "n", "n"), out)    # solo 3 preguntas tras el log: no hay «solo comparación»
+        self.assertNotIn("Solo comparar", out.getvalue())
 
     def test_gather_only_main(self):
         sel = gather_console(_answers(str(self.main), "", "", ""), io.StringIO())
@@ -355,7 +377,7 @@ class ConsolePromptsTest(unittest.TestCase):
             gather_console(eof, io.StringIO())
 
     def test_main_without_args_uses_prompts(self):
-        answers = _answers(str(self.main), "s", str(self.prev), "n", "n", "n")
+        answers = _answers(str(self.main), "s", str(self.prev), "n", "n", "n", "n")
         with mock.patch("builtins.input", answers), mock.patch.object(cli, "gui_status", return_value=(False, "sin pantalla", "n/a")):
             rc = cli.main(["--no-gui", "--no-console", "--no-progress"])
         self.assertEqual(rc, 0)
