@@ -6,10 +6,11 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 from pipeline_analyzer.cli import _expand, main
 from pipeline_analyzer.extractors import extract
-from pipeline_analyzer.logparser import parse_run
+from pipeline_analyzer.logparser import parse_attempts, parse_run
 from pipeline_analyzer.progress import Progress
 
 from test_analyzer import run_dir
@@ -64,6 +65,64 @@ class FolderTest(unittest.TestCase):
         self.assertEqual(m["tests"]["failures"], 1)
         self.assertIn("3_Maven - Verify.txt:3", m["tests"]["failing"][0]["where"])
         self.assertEqual(m["static"]["pmd"]["status"], "NO EJECUTADO")
+
+    def test_parse_attempts_can_skip_pipeline_definitions(self):
+        folder = make_download(self.tmp)
+        definition = folder / "azure-pipelines.yml"
+        definition.write_text("steps: []\n", encoding="utf-8")
+        included_files = []
+        included = parse_attempts(folder, included_files.append)[0]
+        self.assertEqual(included.definitions, [("azure-pipelines.yml", "steps: []\n")])
+        self.assertIn("azure-pipelines.yml", included_files)
+
+        skipped_files = []
+        skipped = parse_attempts(folder, skipped_files.append, include_definitions=False)[0]
+        self.assertEqual(skipped.definitions, [])
+        self.assertNotIn("azure-pipelines.yml", skipped_files)
+
+    def test_cli_applies_yaml_selection_and_no_yaml(self):
+        folder = make_download(self.tmp)
+        workflow = folder / ".github" / "workflows" / "ci.yml"
+        workflow.parent.mkdir(parents=True)
+        workflow.write_text("name: CI\non: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n"
+                            "    steps:\n      - uses: actions/checkout@v4\n", encoding="utf-8")
+
+        def run_case(name, selection=None, no_yaml=False, interactive=False):
+            out = self.tmp / ("out_" + name)
+            common = ["--out-dir", str(out), "--formats", "html,json", "--no-console", "--no-progress"]
+            if no_yaml:
+                common.append("--no-yaml")
+            if interactive:
+                selected = {"logs": [str(folder)], "main": str(folder), "pom": None, "reports": [], "compare_only": False}
+                if selection is not None:
+                    selected["yaml"] = {str(folder): selection}
+                with mock.patch("pipeline_analyzer.cli.gather_console", return_value=selected):
+                    rc = main(["--no-gui"] + common)
+            else:
+                rc = main([str(folder)] + common)
+            report_dir = sorted(d for d in out.iterdir() if d.is_dir())[-1]
+            return rc, (report_dir / "reporte.json").read_text(encoding="utf-8"), \
+                (report_dir / "reporte.html").read_text(encoding="utf-8")
+
+        for name, selection, no_yaml, interactive, included in (
+                ("unchecked", False, False, True, False),
+                ("checked", True, False, True, True),
+                ("flag", None, True, False, False),
+                ("default", None, False, False, True)):
+            with self.subTest(name=name):
+                rc, report, html = run_case(name, selection, no_yaml, interactive)
+                self.assertEqual(rc, 0)
+                self.assertEqual("PDEF_UNPINNED_ACTIONS" in report, included)
+                self.assertEqual("ci.yml" in html, included)
+                self.assertIn("1 definición(es) de pipeline" if included else "0 definición(es) de pipeline", html)
+
+    def test_cli_rejects_more_than_three_expanded_runs(self):
+        folder = make_download(self.tmp)
+        stderr = io.StringIO()
+        with mock.patch("sys.stderr", stderr):
+            rc = main([str(folder)] * 4 + ["--no-gui", "--no-progress", "--formats", "none"])
+        self.assertEqual(rc, 2)
+        self.assertIn("Máximo 3 ejecuciones", stderr.getvalue())
 
     def test_step_files_without_headers(self):
         log = parse_run(make_download(self.tmp, headers=False))

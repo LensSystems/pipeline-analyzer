@@ -6,11 +6,13 @@ import json
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
 from pipeline_analyzer import cli
-from pipeline_analyzer.interactive import Cancelled, gather_console
+from pipeline_analyzer.interactive import (Cancelled, compare_limit_reached, detect_yaml, gather_console, sync_yaml,
+                                           yaml_form_states, yaml_options, yaml_return_state)
 from pipeline_analyzer.progress import Progress
 
 from test_folders import make_download
@@ -19,6 +21,119 @@ from test_folders import make_download
 def _answers(*values):
     it = iter(values)
     return lambda prompt="": next(it)
+
+
+class DetectYamlTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def _zip(self, name, entries):
+        path = self.tmp / name
+        with zipfile.ZipFile(str(path), "w") as archive:
+            for entry, content in entries:
+                archive.writestr(entry, content)
+        return path
+
+    def test_directory_without_yaml_and_nested_yaml_extensions(self):
+        folder = self.tmp / "logs"
+        folder.mkdir()
+        (folder / "pipeline.log").write_text("log", encoding="utf-8")
+        self.assertIsNone(detect_yaml(str(folder)))
+        nested = folder / "sub"
+        nested.mkdir()
+        (nested / "pipeline.YML").write_text("yaml", encoding="utf-8")
+        self.assertEqual(detect_yaml(str(folder)), ".yml")
+        (folder / "other.yaml").write_text("yaml", encoding="utf-8")
+        self.assertEqual(detect_yaml(str(folder)), ".yaml")
+
+    def test_zip_without_yaml_and_nested_yaml_extensions(self):
+        archive = self._zip("logs.zip", [("pipeline.log", "log")])
+        self.assertIsNone(detect_yaml(str(archive)))
+        archive = self._zip("nested.zip", [("sub/pipeline.yml", "yaml")])
+        self.assertEqual(detect_yaml(str(archive)), ".yml")
+        archive = self._zip("both.zip", [("sub/pipeline.yml", "yaml"), ("pipeline.yaml", "yaml")])
+        self.assertEqual(detect_yaml(str(archive)), ".yaml")
+
+    def test_non_zip_file_corrupt_zip_and_missing_path(self):
+        log = self.tmp / "pipeline.log"
+        log.write_text("log", encoding="utf-8")
+        corrupt = self.tmp / "broken.zip"
+        corrupt.write_bytes(b"not a zip")
+        self.assertIsNone(detect_yaml(str(log)))
+        self.assertIsNone(detect_yaml(str(corrupt)))
+        self.assertIsNone(detect_yaml(str(self.tmp / "missing")))
+
+
+class YamlOptionsTest(unittest.TestCase):
+    def test_empty_and_main_only_options(self):
+        detect = {"main": ".yaml", "cmp": ".yml"}.get
+        self.assertEqual(yaml_options(None, [], lambda path: detect(path)), [])
+        self.assertEqual(yaml_options("main", [], lambda path: detect(path)), [
+            ("main", "main", "¿Quieres agregar el archivo .yaml al análisis?")])
+
+    def test_main_and_two_comparisons_use_positions_from_full_list(self):
+        extensions = {"main": ".yaml", "first": ".yml", "second": None, "third": ".yaml"}
+        options = yaml_options("main", ["first", "second", "third"], extensions.get)
+        self.assertEqual(options, [
+            ("main", "main", "¿Quieres agregar el archivo .yaml al análisis?"),
+            ("cmp:first", "first", "¿Quieres agregar el archivo .yml al análisis de comparación 1?"),
+            ("cmp:third", "third", "¿Quieres agregar el archivo .yaml al análisis de comparación 3?"),
+        ])
+
+    def test_single_comparison_has_no_number_and_counts_without_main(self):
+        options = yaml_options(None, ["previous"], lambda path: ".yml")
+        self.assertEqual(options, [
+            ("cmp:previous", "previous", "¿Quieres agregar el archivo .yml al análisis de comparación?")])
+
+
+class SyncYamlTest(unittest.TestCase):
+    def test_single_option_keeps_state_unchanged(self):
+        states = {"main": (True, True)}
+        self.assertEqual(sync_yaml("main", states), states)
+
+    def test_marking_links_two_options_and_unmarking_releases_them(self):
+        states = {"main": (True, True), "cmp:a": (False, True)}
+        self.assertEqual(sync_yaml("main", states), {"main": (True, True), "cmp:a": (True, False)})
+        states = {"main": (True, False), "cmp:a": (False, True)}
+        self.assertEqual(sync_yaml("cmp:a", states), {"main": (False, True), "cmp:a": (False, True)})
+
+    def test_marking_links_three_options_and_unmarking_releases_them(self):
+        states = {"main": (False, True), "cmp:a": (True, True), "cmp:b": (False, True)}
+        self.assertEqual(sync_yaml("cmp:a", states), {
+            "main": (True, False), "cmp:a": (True, True), "cmp:b": (True, False)})
+        states["cmp:a"] = (False, True)
+        self.assertEqual(sync_yaml("cmp:a", states), {
+            "main": (False, True), "cmp:a": (False, True), "cmp:b": (False, True)})
+
+
+class YamlFormStateTest(unittest.TestCase):
+    def test_state_is_initialized_preserved_and_removed_with_visible_options(self):
+        options = [("main", "/logs/current", "main"), ("cmp:/logs/old", "/logs/old", "old")]
+        self.assertEqual(yaml_form_states(options, {}), {
+            "main": (False, True), "cmp:/logs/old": (False, True)})
+        self.assertEqual(yaml_form_states(options, {"main": (True, True), "removed": (True, True)}), {
+            "main": (True, True), "cmp:/logs/old": (True, False)})
+        # La clave main es estable, pero una ruta principal nueva recibe estado sin marcar.
+        self.assertEqual(yaml_form_states([("main", "/logs/new", "main")], {"main": (True, True)},
+                                          {"main": "/logs/current"}), {"main": (False, True)})
+        # Al quitar la opción seleccionada, las restantes vuelven a estar desmarcadas y habilitadas.
+        remaining = [options[0], ("cmp:/logs/new", "/logs/new", "new")]
+        self.assertEqual(yaml_form_states(remaining, {
+            "main": (False, False), "cmp:/logs/old": (True, True), "cmp:/logs/new": (False, False)}), {
+            "main": (False, True), "cmp:/logs/new": (False, True)})
+
+    def test_return_selection_uses_exact_log_paths_for_go_and_compare(self):
+        logs = ["/logs/old/", "/logs/current"]
+        options = [("cmp:/logs/old/", logs[0], "old"), ("main", logs[1], "main")]
+        states = {"cmp:/logs/old/": (True, False), "main": (True, True)}
+        result = yaml_return_state(logs, options, states)
+        self.assertEqual(result, {"/logs/old/": True, "/logs/current": True})
+        self.assertEqual(list(result), logs)
+
+    def test_compare_limit_is_reached_at_maximum(self):
+        self.assertFalse(compare_limit_reached(0))
+        self.assertFalse(compare_limit_reached(1))
+        self.assertTrue(compare_limit_reached(2))
 
 
 class PlatformStyleTest(unittest.TestCase):
@@ -331,7 +446,8 @@ class ConsolePromptsTest(unittest.TestCase):
 
     def test_compare_only_skips_pom_and_reports(self):
         sel = gather_console(_answers(str(self.main), "s", str(self.prev), "n", "s"), io.StringIO())
-        self.assertEqual(sel, {"logs": [str(self.prev), str(self.main)], "pom": None, "main": str(self.main), "reports": [], "compare_only": True})
+        self.assertEqual(sel, {"logs": [str(self.prev), str(self.main)], "pom": None, "main": str(self.main), "reports": [],
+                               "compare_only": True, "yaml": {str(self.prev): False, str(self.main): False}})
 
     def test_compare_only_is_not_offered_without_a_comparison(self):
         out = io.StringIO()
@@ -339,8 +455,78 @@ class ConsolePromptsTest(unittest.TestCase):
         self.assertNotIn("Solo comparar", out.getvalue())
 
     def test_gather_only_main(self):
-        sel = gather_console(_answers(str(self.main), "", "", ""), io.StringIO())
+        prompts = []
+        answers = iter([str(self.main), "", "", ""])
+        sel = gather_console(lambda prompt: prompts.append(prompt) or next(answers), io.StringIO())
         self.assertEqual((sel["logs"], sel["pom"]), ([str(self.main)], None))
+        self.assertEqual(sel["yaml"], {str(self.main): False})
+        self.assertFalse(any("¿Quieres agregar" in prompt for prompt in prompts))
+
+    def test_yaml_yes_marks_the_route_and_uses_the_option_text(self):
+        yaml_main = self.main / "pipeline.yml"
+        yaml_main.write_text("steps: []\n", encoding="utf-8")
+        prompts = []
+        answers = iter([str(self.main), "n", "s", "n", "n"])
+
+        def input_fn(prompt):
+            prompts.append(prompt)
+            return next(answers)
+
+        selection = gather_console(input_fn, io.StringIO())
+        self.assertEqual(selection["yaml"], {str(self.main): True})
+        self.assertIn("¿Quieres agregar el archivo .yml al análisis? [s/N]: ", prompts)
+
+    def test_yaml_no_continues_to_next_option_and_yes_links_every_yaml(self):
+        (self.main / "pipeline.yaml").write_text("steps: []\n", encoding="utf-8")
+        (self.prev / "pipeline.yml").write_text("steps: []\n", encoding="utf-8")
+        prompts = []
+        answers = iter([str(self.main), "s", str(self.prev), "n", "n", "s", "n", "n", "n"])
+
+        def input_fn(prompt):
+            prompts.append(prompt)
+            return next(answers)
+
+        selection = gather_console(input_fn, io.StringIO())
+        self.assertEqual(selection["yaml"], {str(self.prev): True, str(self.main): True})
+        self.assertIn("comparación? [s/N]", next(p for p in prompts if "análisis de comparación" in p))
+        self.assertEqual(sum("¿Quieres agregar" in prompt for prompt in prompts), 2)
+
+    def test_yaml_yes_skips_remaining_yaml_questions(self):
+        (self.main / "pipeline.yaml").write_text("steps: []\n", encoding="utf-8")
+        (self.prev / "pipeline.yml").write_text("steps: []\n", encoding="utf-8")
+        prompts = []
+        answers = iter([str(self.main), "s", str(self.prev), "n", "s", "s"])
+
+        def input_fn(prompt):
+            prompts.append(prompt)
+            return next(answers)
+
+        selection = gather_console(input_fn, io.StringIO())
+        self.assertEqual(selection["yaml"], {str(self.prev): True, str(self.main): True})
+        self.assertEqual(sum("¿Quieres agregar" in prompt for prompt in prompts), 1)
+        self.assertTrue(selection["compare_only"])
+        self.assertEqual(set(selection["yaml"]), set(selection["logs"]))
+
+    def test_two_comparison_prompts_are_numbered_and_limit_includes_yaml_selection(self):
+        newer = make_download(self.tmp / "otra", "75")
+        (self.prev / "pipeline.yml").write_text("steps: []\n", encoding="utf-8")
+        (newer / "pipeline.yaml").write_text("steps: []\n", encoding="utf-8")
+        prompts, out = [], io.StringIO()
+        answers = iter([str(self.main), "s", str(self.prev), "s", str(newer), "n", "n", "n", "n", "n"])
+
+        def input_fn(prompt):
+            prompts.append(prompt)
+            return next(answers)
+
+        selection = gather_console(input_fn, out)
+        yaml_prompts = [p for p in prompts if "¿Quieres agregar" in p]
+        self.assertEqual(len(yaml_prompts), 2)
+        self.assertIn("comparación 1? [s/N]", yaml_prompts[0])
+        self.assertIn("comparación 2? [s/N]", yaml_prompts[1])
+        self.assertIn("Límite: máximo 2 comparaciones", out.getvalue())
+        self.assertEqual(set(selection["yaml"]), set(selection["logs"]))
+        self.assertFalse(selection["yaml"][str(self.prev)])
+        self.assertFalse(selection["yaml"][str(newer)])
 
     @unittest.skipIf(sys.platform.startswith("win"), "en Windows la barra invertida es separador de ruta, no escape de espacios")
     def test_dragged_path_with_escaped_spaces(self):

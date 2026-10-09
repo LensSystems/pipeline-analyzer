@@ -101,13 +101,17 @@ También puedes hacer doble clic en `analizar_pipeline.command` (macOS) o `anali
 | Fila | Qué se elige |
 |---|---|
 | **Log principal** (obligatorio) | Carpeta de descarga (p. ej. `logs_123456`), `.zip` o archivo `.txt`/`.log` |
-| **Comparación** | Una o varias ejecuciones anteriores, para ver qué mejoró o empeoró |
+| **Comparación** | Hasta dos ejecuciones anteriores, para ver qué mejoró o empeoró |
 | **pom.xml** | Para revisar su configuración de build, calidad y dependencias |
 | **Reportes** | PDF de Checkmarx o XML/JSON de PMD, Checkstyle y SpotBugs que no venían en la carpeta o el `.zip` (archivos o una carpeta completa) |
 
 **Un archivo, un solo apartado:** no se puede usar el mismo archivo en dos apartados (ni repetirlo dentro de uno), p. ej. el mismo archivo como comparación, pom y reporte. Si la ruta completa es la misma, aparece «Archivo no válido» y no se agrega. Un archivo con el mismo nombre pero en otra carpeta sí es válido. La consola aplica la misma regla.
 
 **Solo comparación:** cuando hay log principal y al menos una comparación aparece el botón **Solo comparación** (en consola, una pregunta; en la línea de comandos, `--compare-only`). Genera solo el comparativo viejo → nuevo, sin pom ni reportes de herramientas, y los reportes contienen únicamente eso.
+
+**Agregar YAML al análisis:** si la carpeta o el `.zip` de una ejecución contiene un `.yaml` o `.yml`, aparece debajo de las entradas una casilla «¿Quieres agregar el archivo .yaml al análisis?» (o `.yml`, según corresponda); en consola se hace la misma pregunta. Aparece desmarcada: sin marcar, el YAML se omite; marcada, se analiza. Hay una opción por ejecución. Para las comparaciones, el texto dice «al análisis de comparación»: sin número cuando hay una y «comparación 1» / «comparación 2» cuando hay dos. Al marcar una opción, se marcan y bloquean las demás para que todas las ejecuciones se analicen con las mismas definiciones; al desmarcarla, se liberan. También aparecen en **Solo comparación**.
+
+En cualquiera de los modos se permite un log principal y hasta dos comparaciones (tres ejecuciones en total). Con argumentos, el YAML se incluye por defecto; usa `--no-yaml` para omitirlo.
 
 Cada elemento agregado tiene su botón naranja **Quitar**; **Analizar** se habilita en cuanto eliges el log principal. La ventana es ancha para que se lean las rutas, se alarga sola al agregar archivos y vuelve a su alto base al quitarlos. Lo único que cambia entre sistemas es el aspecto nativo (ver más abajo) y el orden de los botones.
 
@@ -119,7 +123,7 @@ Después, una ventana muestra el avance (con barra determinada) y, al terminar, 
 - Durante el análisis hay un botón **Cancelar** (también cerrar la ventana, o ⌘. en macOS) que pide confirmación antes de detenerlo; en macOS, ⌘W y ⌘Q cierran la ventana.
 - La tecla **Esc no cierra ni cancela nada** en ningún sistema.
 
-**Apariencia nativa según el sistema y su versión:** macOS usa los controles Aqua (botón principal azul, modo claro/oscuro del sistema); Windows 11 usa Segoe UI Variable y Windows 10 Segoe UI, con el orden de botones de Windows (el principal a la izquierda); Linux usa el tema `clam`. En Windows y Linux la ventana se ve siempre en modo claro. Sin entorno gráfico (servidor, SSH, Python sin tkinter) se hacen las mismas preguntas en la consola, una por una: log principal, ¿agregar comparación?, ¿agregar `pom.xml`? y ¿agregar reportes de las herramientas? `--no-gui` fuerza este modo y `--gui` abre las ventanas aunque pases rutas.
+**Apariencia nativa según el sistema y su versión:** macOS usa los controles Aqua (botón principal azul, modo claro/oscuro del sistema); Windows 11 usa Segoe UI Variable y Windows 10 Segoe UI, con el orden de botones de Windows (el principal a la izquierda); Linux usa el tema `clam`. En Windows y Linux la ventana se ve siempre en modo claro. Sin entorno gráfico (servidor, SSH, Python sin tkinter) se hacen las mismas preguntas en la consola: log principal, hasta dos comparaciones, selección de YAML, «Solo comparación», `pom.xml` y reportes de las herramientas. Al llegar a dos comparaciones ya no se ofrece agregar otra. `--no-gui` fuerza este modo y `--gui` abre las ventanas aunque pases rutas.
 
 ### Con argumentos
 
@@ -160,6 +164,7 @@ python3 -m pipeline_analyzer logs_123456 --fail-on HIGH --formats none
 | `--out-dir` | Carpeta base de los reportes (por defecto `reporte_pipeline/`). Cada análisis crea una subcarpeta nueva y **nunca sobrescribe** las anteriores |
 | `--formats` | `full,pdf,pdf-full,md,json` (por defecto) o `none`; `html` agrega el HTML enmascarado (opcional) |
 | `--all-attempts` | Analiza cada intento (re-run) de una descarga como ejecución separada |
+| `--no-yaml` | Omite las definiciones YAML de todas las ejecuciones; por defecto, la línea de comandos las incluye |
 | `--no-redact` | No enmascarar secretos en `reporte.pdf`, `.md` y `.json` (por defecto **sí** se enmascaran) |
 | `--mask-infra` | Enmascara además correos, IPs y hosts |
 | `--fail-on` | `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` o `INFO` |
@@ -189,13 +194,15 @@ logs_123456/
 │   └── …59_Finalize Job.txt
 ├── 1_Build Block + Security.txt      → log combinado: solo aporta pasos que falten
 ├── 1_Build Block + Security (1).txt  → otro intento (re-run): se separa por tiempo
-├── azure-pipelines-expanded.yaml     → definición del pipeline: se revisa su configuración
+├── azure-pipelines-expanded.yaml     → definición del pipeline: se analiza si se marca en modo interactivo
 └── initializeLog.txt                 → auxiliar (inicialización del agente)
 ```
 
 - **Proveedor:** se detecta por el contenido (`##[section]` Azure, `##[group]Run` GitHub, `section_start` GitLab, `[Pipeline]` Jenkins). Sin marcas, el log es «genérico».
 - **Sin duplicados:** los pasos del log combinado se emparejan con los archivos por paso aunque el nombre esté truncado o saneado.
 - **Intentos:** si la descarga contiene varios, se analiza el más reciente; con `--all-attempts` se analizan todos.
+- **YAML:** en modo interactivo se analiza solo si se marca la casilla o se responde «sí» en consola; con argumentos se incluye por defecto, salvo que se use `--no-yaml`.
+- **Comparaciones:** se admite un máximo de tres ejecuciones: un log principal y dos comparaciones. La línea de comandos termina con código 2 si se expanden más de tres.
 - **Búsqueda por contenido:** Maven, Sonar, CxOne, TMAS, Checkstyle/PMD/SpotBugs se encuentran por su salida, no por el nombre del paso.
 - Las ubicaciones del reporte indican archivo y línea: `Build Block + Security/26_Maven - Verify.txt:212`.
 

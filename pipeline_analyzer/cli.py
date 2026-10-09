@@ -29,7 +29,7 @@ from .pom_checks import check_pom
 from . import inventory
 from .tool_reports import discover_reports
 from . import compat
-from .interactive import Cancelled, Gui, gather_console, gui_status
+from .interactive import MAX_COMPARE, Cancelled, Gui, gather_console, gui_status
 from .progress import Progress
 from .report import Analysis, Run, render_console, render_html, render_json, render_markdown, render_pdf
 from .rules import SEVERITIES, SEVERITY_RANK, evaluate
@@ -114,6 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--no-progress", action="store_true", help="No mostrar el indicador de avance")
     ap.add_argument("--all-attempts", action="store_true",
                     help="Si una descarga contiene varios intentos (re-runs), analizar cada uno como una ejecución")
+    ap.add_argument("--no-yaml", action="store_true", help="Omitir las definiciones YAML de todas las ejecuciones")
     ap.add_argument("--no-redact", action="store_true",
                     help="No enmascarar secretos en los reportes (por defecto se enmascaran)")
     ap.add_argument("--mask-infra", action="store_true",
@@ -197,6 +198,7 @@ def main(argv=None) -> int:
                 continue
             args.logs = sel["logs"]
             args.compare_only = args.compare_only or bool(sel.get("compare_only"))
+            args.yaml = sel.get("yaml", {})
             args.pom = args.pom or sel["pom"]
             args.reports = list(args.reports or []) + list(sel.get("reports") or [])
             if args.out_dir is None:
@@ -251,6 +253,10 @@ def _run(args, gui) -> int:
     if not paths:
         print("No se encontraron logs en: " + ", ".join(args.logs), file=sys.stderr)
         return 2
+    if len(paths) > MAX_COMPARE + 1:
+        print("Máximo %d ejecuciones (1 principal y %d comparaciones); se recibieron %d."
+              % (MAX_COMPARE + 1, MAX_COMPARE, len(paths)), file=sys.stderr)
+        return 2
 
     if args.compare_only and len(paths) < 2:
         print("--compare-only necesita al menos dos ejecuciones (la anterior y la nueva).", file=sys.stderr)
@@ -265,7 +271,12 @@ def _run(args, gui) -> int:
         return 2
 
     formats = [] if args.formats == "none" else [x.strip() for x in args.formats.split(",") if x.strip()]
-    file_counts = [len(discover(p)) if is_multi_file(p) else 1 for p in paths]
+    yaml_selection = getattr(args, "yaml", {}) or {}
+    include_definitions = [not getattr(args, "no_yaml", False) and yaml_selection.get(str(p), True) for p in paths]
+    file_counts = []
+    for p, include_yaml in zip(paths, include_definitions):
+        members = discover(p) if is_multi_file(p) else []
+        file_counts.append(sum(1 for _, _, kind in members if kind != "def" or include_yaml) if is_multi_file(p) else 1)
     total = sum(file_counts) + 2 * len(paths) + (1 if args.pom else 0) + len(formats)
     prog = Progress(total, enabled=not args.no_progress, listener=gui.open_progress() if gui else None)
 
@@ -288,7 +299,7 @@ def _run(args, gui) -> int:
                 n[0] += 1
                 prog.advance("%d/%d %s" % (n[0], total_files, rel.rsplit("/", 1)[-1]))
 
-            attempts = parse_attempts(path, on_file)
+            attempts = parse_attempts(path, on_file, include_definitions=include_definitions[i])
             if not args.all_attempts:
                 attempts = attempts[-1:]
             prog.stage("Extrayendo métricas y evaluando reglas de %s" % name)
@@ -336,7 +347,8 @@ def _run(args, gui) -> int:
                 report_dirs.append(Path(args.pom).parent / "target")
             audit: List[dict] = []
             analysis.tool_reports = discover_reports([d for d in report_dirs if d.exists()], audit)
-            analysis.review = inventory.build(list(paths) + [d for d in report_dirs if d not in paths and d.exists()], audit)
+            analysis.review = inventory.build(list(paths) + [d for d in report_dirs if d not in paths and d.exists()], audit,
+                                               yaml_selection={str(p): include for p, include in zip(paths, include_definitions)})
             c = analysis.review["counts"]
             prog.log("Archivos revisados: %d (%d logs, %d definiciones, %d reportes de herramientas, %d ignorados)"
                      % (c["total"], c["logs"], c["definiciones"], c["reportes"], c["ignorados"]))
