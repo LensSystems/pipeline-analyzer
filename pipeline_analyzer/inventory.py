@@ -5,7 +5,7 @@ Así el reporte deja claro qué se leyó (logs, definiciones de pipeline, report
 
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 
 from .logparser import _kind
 
@@ -40,12 +40,15 @@ def _entries(path: Path) -> Iterable[str]:
         yield path.name
 
 
-def build(paths: Iterable[Path], report_audit: List[Dict[str, str]]) -> Dict[str, Any]:
+def build(paths: Iterable[Path], report_audit: List[Dict[str, str]],
+          yaml_selection: Optional[Dict[str, bool]] = None) -> Dict[str, Any]:
     """``{"files": [{"origin", "file", "status"}], "counts": {...}}`` de todo lo compartido."""
     audit = {Path(a["file"].rsplit("!", 1)[-1]).name: a["status"] for a in report_audit}
     files: List[Dict[str, str]] = []
     for p in map(Path, paths):
         for rel in _entries(p):
+            if _kind(rel) == "def" and yaml_selection is not None and not yaml_selection.get(str(p), True):
+                continue
             name = rel.rsplit("/", 1)[-1]
             ext = Path(name).suffix.lower()
             kind = _kind(rel)

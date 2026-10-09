@@ -508,7 +508,8 @@ def _merge(path: Path, files: List[_File], provider: str) -> PipelineLog:
     return PipelineLog(path, job or path.stem, all_steps, all_lines, [c[2] for c in chunks], provider)
 
 
-def parse_attempts(path, on_file: Optional[Callable[[str], None]] = None) -> List[PipelineLog]:
+def parse_attempts(path, on_file: Optional[Callable[[str], None]] = None,
+                   include_definitions: bool = True) -> List[PipelineLog]:
     """Todas las ejecuciones (intentos) contenidas en ``path``, de la más antigua a la más reciente."""
     path = Path(path)
     if not is_multi_file(path):
@@ -521,6 +522,8 @@ def parse_attempts(path, on_file: Optional[Callable[[str], None]] = None) -> Lis
     defs: List[Tuple[str, str]] = []
     aux: List[Tuple[str, List[str]]] = []
     for rel, reader, kind in members:
+        if kind == "def" and not include_definitions:
+            continue
         if on_file:
             on_file(rel)
         content = reader()

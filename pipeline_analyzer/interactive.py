@@ -6,27 +6,131 @@
 
 Entradas (una sola pantalla, igual en macOS, Windows y Linux):
   - Log principal (obligatorio): carpeta de descarga, .zip o archivo de log.
-  - Comparación (opcional): una o varias ejecuciones anteriores. Con ellas aparece «Solo comparación» (botón nativo): genera
+  - Comparación (opcional): hasta dos ejecuciones anteriores. Con ellas aparece «Solo comparación» (botón nativo): genera
     únicamente el comparativo viejo → nuevo, sin pom ni reportes de herramientas.
+  - YAML (opcional): si la carpeta o el .zip contiene un .yaml o .yml, pregunta si se agrega al análisis; en ventanas aparece
+    una casilla. Al marcar uno, se marcan los demás YAML visibles para mantener comparables las ejecuciones.
   - pom.xml (opcional).
   - Reportes de las herramientas (opcional): PDF/JSON/XML/Markdown de Checkmarx, PMD, Checkstyle, SpotBugs…, por si no venían
     incluidos en la carpeta o el .zip de logs; archivos o carpetas.
-En la consola, las mismas preguntas una por una.
+En la consola, el orden es: log principal → hasta dos comparaciones → YAML → «Solo comparación» → pom → reportes.
+Se pregunta por los YAML después de reunir las rutas para que sus textos y su selección incluyan todas las comparaciones.
 """
 
 import os
 import re
 import sys
+import zipfile
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
+
+from .inventory import MAX_ENTRIES
 
 LOG_TYPES = [("Logs de pipeline", "*.txt *.log *.zip *.out"), ("Todos los archivos", "*.*")]
 POM_TYPES = [("pom.xml", "*.xml"), ("Todos los archivos", "*.*")]
 REPORT_TYPES = [("Reportes de herramientas", "*.pdf *.json *.xml *.md"), ("Todos los archivos", "*.*")]
+MAX_COMPARE = 2
 
 
 class Cancelled(Exception):
     """El usuario canceló la selección del log principal o cerró la ventana."""
+
+
+def detect_yaml(path: str) -> Optional[str]:
+    """Devuelve la extensión YAML encontrada en una carpeta o ZIP, con tope de entradas."""
+    source = Path(path)
+    found_yml = False
+
+    def consider(name: str) -> Optional[str]:
+        nonlocal found_yml
+        suffix = Path(name).suffix.lower()
+        if suffix == ".yaml":
+            return ".yaml"
+        if suffix == ".yml":
+            found_yml = True
+        return None
+
+    if source.is_dir():
+        try:
+            for i, entry in enumerate(source.rglob("*")):
+                if i > MAX_ENTRIES:
+                    break
+                if entry.is_file():
+                    result = consider(entry.name)
+                    if result:
+                        return result
+        except OSError:
+            pass
+    elif source.is_file() and source.suffix.lower() == ".zip":
+        try:
+            with zipfile.ZipFile(str(source)) as archive:
+                for i, name in enumerate(archive.namelist()):
+                    if i > MAX_ENTRIES:
+                        break
+                    if not name.endswith("/"):
+                        result = consider(name)
+                        if result:
+                            return result
+        except (zipfile.BadZipFile, OSError):
+            return None
+    return ".yml" if found_yml else None
+
+
+def yaml_options(main: Optional[str], compare: List[str], detect=detect_yaml) -> List[Tuple[str, str, str]]:
+    """Opciones (clave, ruta, texto) para las entradas que contienen YAML."""
+    options = []
+    if main:
+        extension = detect(main)
+        if extension:
+            options.append(("main", main, "¿Quieres agregar el archivo %s al análisis?" % extension))
+    for position, path in enumerate(compare, 1):
+        extension = detect(path)
+        if extension:
+            label = "comparación" if len(compare) == 1 else "comparación %d" % position
+            options.append(("cmp:" + path, path,
+                            "¿Quieres agregar el archivo %s al análisis de %s?" % (extension, label)))
+    return options
+
+
+def sync_yaml(checked_key: str, states: Dict[str, Tuple[bool, bool]]) -> Dict[str, Tuple[bool, bool]]:
+    """Sincroniza checkboxes YAML tras cambiar uno: (marcado, habilitado) por clave."""
+    result = dict(states)
+    if checked_key not in states or len(states) <= 1:
+        return result
+    checked = states[checked_key][0]
+    if checked:
+        return {key: (True, key == checked_key) for key in states}
+    return {key: (False, True) for key in states}
+
+
+def yaml_form_states(options: List[Tuple[str, str, str]],
+                     states: Dict[str, Tuple[bool, bool]],
+                     previous_routes: Optional[Dict[str, str]] = None) -> Dict[str, Tuple[bool, bool]]:
+    """Conserva estado solo para las opciones visibles y repara el vínculo tras redibujar."""
+    routes = {key: path for key, path, _text in options}
+    keys = list(routes)
+    result = {key: states.get(key, (False, True)) if previous_routes is None or previous_routes.get(key) == routes[key]
+              else (False, True) for key in keys}
+    if len(keys) <= 1:
+        return {key: (result[key][0], True) for key in keys}
+    active = next((key for key in keys if result[key][0] and result[key][1]), None)
+    if active:
+        return sync_yaml(active, result)
+    if any(result[key][0] for key in keys):  # se quitó la opción que mantenía bloqueadas las demás
+        return {key: (False, True) for key in keys}
+    return {key: (False, True) for key in keys}
+
+
+def yaml_return_state(logs: List[str], options: List[Tuple[str, str, str]],
+                      states: Dict[str, Tuple[bool, bool]]) -> Dict[str, bool]:
+    """Construye la selección por ruta; sus claves coinciden exactamente con ``logs``."""
+    checked_by_path = {path: states.get(key, (False, True))[0] for key, path, _text in options}
+    return {path: checked_by_path.get(path, False) for path in logs}
+
+
+def compare_limit_reached(compare_count: int) -> bool:
+    """Indica si ya se alcanzó el máximo de comparaciones permitido."""
+    return compare_count >= MAX_COMPARE
 
 
 # ====================================================================== consola
@@ -113,12 +217,28 @@ def gather_console(input_fn: Optional[Callable[[str], str]] = None, out=None) ->
     st: Dict[str, object] = {"main": None, "compare": [], "pom": None, "reports": []}
     main = st["main"] = _ask_path("1) Log principal (carpeta de descarga, .zip o archivo de log): ", True, input_fn, out)
     compare: List[str] = st["compare"]
-    while _ask_yes("2) ¿Agregar un log de comparación (ejecución anterior)? [s/N]: ", input_fn):
+    while True:
+        if compare_limit_reached(len(compare)):
+            out.write("  Límite: máximo %d comparaciones.\n" % MAX_COMPARE)
+            break
+        if not _ask_yes("2) ¿Agregar un log de comparación (ejecución anterior)? [s/N]: ", input_fn):
+            break
         p = _ask_unique("   Ruta del log de comparación: ", False, st, input_fn, out)
         if p:
             compare.append(p)
+    yaml_items = yaml_options(main, compare)
+    yaml_states = {key: (False, True) for key, _path, _text in yaml_items}
+    for key, _path, prompt in yaml_items:
+        if any(checked for checked, _enabled in yaml_states.values()):
+            break
+        checked = _ask_yes(prompt + " [s/N]: ", input_fn)
+        current_yaml_states = dict(yaml_states)
+        current_yaml_states[key] = (checked, True)
+        yaml_states = sync_yaml(key, current_yaml_states)
+    logs = compare + [main]
+    selected_yaml = yaml_return_state(logs, yaml_items, yaml_states)
     if compare and _ask_yes("   ¿Solo comparar viejo → nuevo, sin el análisis completo? [s/N]: ", input_fn):
-        return {"logs": compare + [main], "pom": None, "main": main, "reports": [], "compare_only": True}
+        return {"logs": logs, "pom": None, "main": main, "reports": [], "compare_only": True, "yaml": selected_yaml}
     pom = None
     if _ask_yes("3) ¿Agregar el pom.xml para revisarlo? [s/N]: ", input_fn):
         pom = st["pom"] = _ask_unique("   Ruta del pom.xml: ", False, st, input_fn, out)
@@ -131,7 +251,7 @@ def gather_console(input_fn: Optional[Callable[[str], str]] = None, out=None) ->
                 break
             reports.append(p)
             out.write("   Agregado (%d).\n" % len(reports))
-    return {"logs": compare + [main], "pom": pom, "main": main, "reports": reports, "compare_only": False}
+    return {"logs": logs, "pom": pom, "main": main, "reports": reports, "compare_only": False, "yaml": selected_yaml}
 
 
 # ====================================================================== ventanas (tkinter)
@@ -497,7 +617,8 @@ class Gui:
 
     FORM_LIMIT = 2     # filas visibles por lista; el resto se resume en «… y n más»
 
-    def _form_row(self, card, label: str, entries: List[tuple], actions: List[tuple], empty: str, last: bool = False) -> None:
+    def _form_row(self, card, label: str, entries: List[tuple], actions: List[tuple], empty: str, last: bool = False,
+                  disabled_actions: tuple = (), notice: Optional[str] = None) -> None:
         """Fila del formulario: etiqueta, lo elegido (nombre y carpeta; «Quitar» por elemento) y las acciones a la derecha."""
         tk, ttk = self.tk, self.ttk
         row = tk.Frame(card, bg=self._card_bg)
@@ -507,7 +628,12 @@ class Gui:
         act = tk.Frame(row, bg=self._card_bg)
         act.pack(side="right", anchor="n", padx=(10, 0))
         for text, value in actions:
-            ttk.Button(act, text=text, command=lambda v=value: self._var.set(v)).pack(side="left", padx=(6, 0))
+            button = ttk.Button(act, text=text, command=lambda v=value: self._var.set(v))
+            if value in disabled_actions:
+                button.state(["disabled"])
+            button.pack(side="left", padx=(6, 0))
+        if notice:
+            ttk.Label(act, text=notice).pack(side="left", padx=(8, 0))
         col = tk.Frame(row, bg=self._card_bg)
         col.pack(side="left", fill="x", expand=True)
         if not entries:
@@ -540,20 +666,60 @@ class Gui:
                        "y los reportes de las herramientas que no venían en la carpeta o el .zip.", small=True)
             card = self._card(pady=(0, 6))
             main, compare, pom, reports = st["main"], st["compare"], st["pom"], st["reports"]
+            compare_full = compare_limit_reached(len(compare))
             self._form_row(card, "Log principal", [(main, "rm:main")] if main else [],
                            [("Carpeta…", "main:dir"), ("Archivo…", "main:file")], "Obligatorio: carpeta, .zip o archivo de log")
             self._form_row(card, "Comparación", [(c, "rm:cmp:%d" % i) for i, c in enumerate(compare)],
-                           [("Carpeta…", "cmp:dir"), ("Archivo…", "cmp:file")], "Una ejecución anterior, para ver qué mejoró")
+                           [("Carpeta…", "cmp:dir"), ("Archivo…", "cmp:file")], "Una ejecución anterior, para ver qué mejoró",
+                           disabled_actions=("cmp:dir", "cmp:file") if compare_full else (),
+                           notice="Máximo %d comparaciones" % MAX_COMPARE if compare_full else None)
             self._form_row(card, "pom.xml", [(pom, "rm:pom")] if pom else [], [("Elegir…", "pom")], "Revisa build, calidad y dependencias")
             self._form_row(card, "Reportes", [(r, "rm:rep:%d" % i) for i, r in enumerate(reports)],
                            [("Archivos…", "rep:files"), ("Carpeta…", "rep:dir")], "PDF, JSON, XML o Markdown de las herramientas", last=True)
+            yaml_options_now = yaml_options(main, compare)
+            st["yaml"] = yaml_form_states(yaml_options_now, st.get("yaml", {}), st.get("yaml_routes"))
+            st["yaml_routes"] = {key: path for key, path, _text in yaml_options_now}
+            if yaml_options_now:
+                yaml_frame = self.ttk.Frame(self.body)
+                yaml_frame.pack(fill="x", pady=(0, 10))
+                yaml_vars, yaml_checks, yaml_labels = {}, {}, {}
+
+                def apply_yaml_state(checked_key):
+                    current = dict(st["yaml"])
+                    current[checked_key] = (bool(yaml_vars[checked_key].get()), True)
+                    st["yaml"] = sync_yaml(checked_key, current)
+                    for key, (checked, enabled) in st["yaml"].items():
+                        yaml_vars[key].set(checked)
+                        yaml_checks[key].state(["!disabled"] if enabled else ["disabled"])
+                        yaml_labels[key].state(["!disabled"] if enabled else ["disabled"])
+
+                for key, _path, text in yaml_options_now:
+                    var = self.tk.BooleanVar(self.root, value=st["yaml"][key][0])
+                    item = self.ttk.Frame(yaml_frame)
+                    item.pack(fill="x")
+                    check = self.ttk.Checkbutton(item, variable=var,
+                                                 command=lambda k=key: apply_yaml_state(k))
+                    check.pack(side="left", anchor="n", pady=(3, 0))
+                    label = self.ttk.Label(item, text=text, justify="left", anchor="w", wraplength=self.WIDTH - 100)
+                    label.pack(side="left", fill="x", expand=True, pady=(3, 0))
+                    label.bind("<Button-1>", lambda _event, w=check: w.invoke())
+                    self._wrapped.append((label, 16))
+                    yaml_vars[key], yaml_checks[key], yaml_labels[key] = var, check, label
+                    if not st["yaml"][key][1]:
+                        check.state(["disabled"])
+                        label.state(["disabled"])
+                self._fit()
             options = [("Analizar", "go")] + ([("Solo comparación", "cmp")] if main and compare else []) + [("Cancelar", "skip")]
             action = self._choice(options, disabled=() if main else ("go",))
             kind, _, arg = action.partition(":")
             if action == "go":
-                return {"logs": list(compare) + [main], "pom": pom, "main": main, "reports": list(reports), "compare_only": False}
+                logs = list(compare) + [main]
+                return {"logs": logs, "pom": pom, "main": main, "reports": list(reports), "compare_only": False,
+                        "yaml": yaml_return_state(logs, yaml_options_now, st["yaml"])}
             if action == "cmp":   # solo viejo → nuevo: el pom y los reportes no intervienen
-                return {"logs": list(compare) + [main], "pom": None, "main": main, "reports": [], "compare_only": True}
+                logs = list(compare) + [main]
+                return {"logs": logs, "pom": None, "main": main, "reports": [], "compare_only": True,
+                        "yaml": yaml_return_state(logs, yaml_options_now, st["yaml"])}
             if action == "skip":
                 raise Cancelled()
             if kind == "rm":
@@ -589,6 +755,9 @@ class Gui:
 
     def _accept(self, path: str, st: Dict[str, object], section: str) -> bool:
         """Rechaza (con aviso) un archivo ya elegido en cualquiera de los 4 apartados: misma ruta, no solo el mismo nombre."""
+        if section == "compare" and compare_limit_reached(len(st["compare"])):
+            self._warn("Límite de comparaciones", "Puedes agregar como máximo %d comparaciones." % MAX_COMPARE)
+            return False
         where = find_duplicate(path, st, skip=(section,) if section in ("main", "pom") else ())
         if where is None:
             return True
