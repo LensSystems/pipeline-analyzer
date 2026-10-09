@@ -272,7 +272,12 @@ def _run(args, gui) -> int:
 
     formats = [] if args.formats == "none" else [x.strip() for x in args.formats.split(",") if x.strip()]
     yaml_selection = getattr(args, "yaml", {}) or {}
-    include_definitions = [not getattr(args, "no_yaml", False) and yaml_selection.get(str(p), True) for p in paths]
+    chosen: dict = {}  # la selección se hizo sobre la ruta elegida; si _expand la reemplaza por varias descargas, la heredan todas
+    for pattern in args.logs:
+        for child in _expand([pattern]):
+            chosen[str(child)] = yaml_selection.get(pattern, yaml_selection.get(str(child), True))
+    include_definitions = [not getattr(args, "no_yaml", False) and chosen.get(str(p), yaml_selection.get(str(p), True))
+                           for p in paths]
     file_counts = []
     for p, include_yaml in zip(paths, include_definitions):
         members = discover(p) if is_multi_file(p) else []

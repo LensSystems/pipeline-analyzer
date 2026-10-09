@@ -116,6 +116,23 @@ class FolderTest(unittest.TestCase):
                 self.assertEqual("ci.yml" in html, included)
                 self.assertIn("1 definición(es) de pipeline" if included else "0 definición(es) de pipeline", html)
 
+    def test_yaml_selection_of_a_grouping_folder_applies_to_every_run_inside(self):
+        group = self.tmp / "descargas"
+        group.mkdir()
+        for build in ("111111", "222222"):
+            run = make_download(group, build)
+            (run / "azure-pipelines.yml").write_text("steps: []\n", encoding="utf-8")
+        for selected, expected in ((False, 0), (True, 2)):
+            with self.subTest(selected=selected):
+                out = self.tmp / ("out_group_%s" % selected)
+                choice = {"logs": [str(group)], "main": str(group), "pom": None, "reports": [], "compare_only": False,
+                          "yaml": {str(group): selected}}
+                with mock.patch("pipeline_analyzer.cli.gather_console", return_value=choice):
+                    rc = main(["--no-gui", "--out-dir", str(out), "--formats", "html", "--no-console", "--no-progress"])
+                self.assertEqual(rc, 0)
+                html = (sorted(d for d in out.iterdir() if d.is_dir())[-1] / "reporte.html").read_text(encoding="utf-8")
+                self.assertIn("%d definición(es) de pipeline" % expected, html)
+
     def test_cli_rejects_more_than_three_expanded_runs(self):
         folder = make_download(self.tmp)
         stderr = io.StringIO()
